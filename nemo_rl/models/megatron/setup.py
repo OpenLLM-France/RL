@@ -713,16 +713,16 @@ def setup_model_and_optimizer(
                 "If megtatron_cfg.peft.enabled is True, alpha must be set in peft_cfg"
             )
         peft = LoRA(
-            target_modules=peft_cfg.get("target_modules", []),
-            exclude_modules=peft_cfg.get("exclude_modules", []),
+            target_modules=peft_cfg["target_modules"],
+            exclude_modules=peft_cfg["exclude_modules"],
             dim=peft_cfg["dim"],
             alpha=peft_cfg["alpha"],
-            dropout=peft_cfg.get("dropout", 0.0),
-            dropout_position=peft_cfg.get("dropout_position", "post"),
-            lora_A_init_method=peft_cfg.get("lora_A_init_method", "xavier"),
-            lora_B_init_method=peft_cfg.get("lora_B_init_method", "zero"),
-            a2a_experimental=peft_cfg.get("a2a_experimental", False),
-            lora_dtype=peft_cfg.get("lora_dtype", None),
+            dropout=peft_cfg["dropout"],
+            dropout_position=peft_cfg["dropout_position"],
+            lora_A_init_method=peft_cfg["lora_A_init_method"],
+            lora_B_init_method=peft_cfg["lora_B_init_method"],
+            a2a_experimental=peft_cfg["a2a_experimental"],
+            lora_dtype=peft_cfg["lora_dtype"],
         )
     else:
         peft = None
@@ -891,16 +891,16 @@ def setup_reference_model_state(
                 "If megtatron_cfg.peft.enabled is True, alpha must be set in peft_cfg"
             )
         peft = LoRA(
-            target_modules=peft_cfg.get("target_modules", []),
-            exclude_modules=peft_cfg.get("exclude_modules", []),
+            target_modules=peft_cfg["target_modules"],
+            exclude_modules=peft_cfg["exclude_modules"],
             dim=peft_cfg["dim"],
             alpha=peft_cfg["alpha"],
-            dropout=peft_cfg.get("dropout", 0.0),
-            dropout_position=peft_cfg.get("dropout_position", "post"),
+            dropout=peft_cfg["dropout"],
+            dropout_position=peft_cfg["dropout_position"],
             lora_A_init_method="zero",
             lora_B_init_method="zero",
-            a2a_experimental=peft_cfg.get("a2a_experimental", False),
-            lora_dtype=peft_cfg.get("lora_dtype", None),
+            a2a_experimental=peft_cfg["a2a_experimental"],
+            lora_dtype=peft_cfg["lora_dtype"],
         )
     else:
         peft = None
