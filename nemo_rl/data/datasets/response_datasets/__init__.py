@@ -28,7 +28,7 @@ from nemo_rl.data.datasets.response_datasets.geometry3k import Geometry3KDataset
 from nemo_rl.data.datasets.response_datasets.helpsteer3 import HelpSteer3Dataset
 from nemo_rl.data.datasets.response_datasets.nemogym_dataset import NemoGymDataset
 from nemo_rl.data.datasets.response_datasets.oai_format_dataset import (
-    OpenAIFormatDataset,
+    OpenAIFormatDataset, OpenAIFormatDatasetMultiFiles
 )
 from nemo_rl.data.datasets.response_datasets.oasst import OasstDataset
 from nemo_rl.data.datasets.response_datasets.openmathinstruct2 import (
@@ -57,6 +57,7 @@ DATASET_REGISTRY = {
     "tulu3_sft_mixture": Tulu3SftMixtureDataset,
     # load from local JSONL file or HuggingFace
     "openai_format": OpenAIFormatDataset,
+    "openai_format_multifiles": OpenAIFormatDatasetMultiFiles,
     "NemoGymDataset": NemoGymDataset,
     "ResponseDataset": ResponseDataset,
 }
