@@ -18,7 +18,7 @@ from nemo_rl.data.datasets.response_datasets.dapo_math import DAPOMath17KDataset
 from nemo_rl.data.datasets.response_datasets.deepscaler import DeepScalerDataset
 from nemo_rl.data.datasets.response_datasets.geometry3k import Geometry3KDataset
 from nemo_rl.data.datasets.response_datasets.oai_format_dataset import (
-    OpenAIFormatDataset,
+    OpenAIFormatDataset, OpenAIFormatDatasetMultiFiles
 )
 from nemo_rl.data.datasets.response_datasets.oasst import OasstDataset
 from nemo_rl.data.datasets.response_datasets.openmathinstruct2 import (
@@ -57,6 +57,16 @@ def load_response_dataset(data_config, seed: int = 42):
         )
     elif dataset_name == "openai_format":
         base_dataset = OpenAIFormatDataset(
+            data_config["train_data_path"],
+            data_config["val_data_path"],
+            data_config["chat_key"],
+            data_config["system_key"],
+            data_config["system_prompt"],
+            data_config["tool_key"],
+            data_config["use_preserving_dataset"],
+        )
+    elif dataset_name == "openai_format_multifiles":
+        base_dataset = OpenAIFormatDatasetMultiFiles(
             data_config["train_data_path"],
             data_config["val_data_path"],
             data_config["chat_key"],
