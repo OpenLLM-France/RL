@@ -155,6 +155,8 @@ def add_loss_mask_to_message_log(
 
     for message_log in batch_message_log:
         for i, message in enumerate(message_log):
+            print("#### DEBUG token ids")
+            print(message["token_ids"])
             if only_unmask_final:
                 if i == len(message_log) - 1:
                     message["token_loss_mask"] = torch.ones_like(
@@ -652,16 +654,6 @@ def get_formatted_message_log(
                     )
                 else:
                     new_message["content"].append(item)
-
-        if not hasattr(get_formatted_message_log, "_debug_token_printed"):
-            print("DEBUG: Individual message token ids")
-            print("\n" + "=" * 80)
-            
-            print(f"\n[Turn {i + 1}/{len(message_log_strs)}] Role: {message['role']}")
-            print(new_message['token_ids'])
-        
-        if i == len(message_log_strs) - 1:
-            get_formatted_message_log._debug_token_printed = True
 
     new_message_log.append(new_message)
     prev_formatted_message = formatted_message
