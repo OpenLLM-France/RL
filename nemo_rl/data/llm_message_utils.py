@@ -154,11 +154,7 @@ def add_loss_mask_to_message_log(
         roles_to_train_on[i] = role.lower()
 
     for message_log in batch_message_log:
-        print("\n\n#### DEBUG token ids")
         for i, message in enumerate(message_log):
-            print(f"#### Turn {i}")
-            print(message["role"])
-            print(message["token_ids"])
             if only_unmask_final:
                 if i == len(message_log) - 1:
                     message["token_loss_mask"] = torch.ones_like(
