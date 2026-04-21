@@ -14,7 +14,7 @@
 
 import json
 import warnings
-from typing import Any, Callable, Union
+from typing import Any, Callable, Union, List
 
 from datasets import load_dataset, concatenate_datasets
 from pathlib import Path
@@ -122,7 +122,7 @@ class OpenAIFormatDataset:
 
     def __init__(
         self,
-        train_ds_path: str,
+        train_ds_path: str | List[str],
         val_ds_path: str,
         chat_key: str = "messages",
         system_key: str | None = None,
@@ -136,14 +136,35 @@ class OpenAIFormatDataset:
         self.tool_key = tool_key
 
         if not use_preserving_dataset:
-            # Use the standard HuggingFace approach (faster and more standard)
-            train_original_dataset = load_dataset("json", data_files=train_ds_path)[
-                "train"
-            ]
-            val_original_dataset = load_dataset("json", data_files=val_ds_path)["train"]
 
-            formatted_train_dataset = train_original_dataset.map(self.add_messages_key)
-            formatted_val_dataset = val_original_dataset.map(self.add_messages_key)
+            # normalize input
+            if isinstance(train_ds_path, str):
+                train_ds_path = [train_ds_path]
+
+            train_datasets = []
+
+            for train_path in train_ds_path:
+                print(train_path)
+                ds = load_dataset("json", data_files=train_path)["train"]
+                print(len(ds))
+                cols_to_keep = [chat_key]
+                if system_key is not None:
+                    cols_to_keep.append(system_key)
+                if tool_key is not None:
+                    cols_to_keep.append(tool_key)
+
+                ds = ds.remove_columns(
+                    [c for c in ds.column_names if c not in cols_to_keep]
+                )
+
+                ds = ds.map(self.add_messages_key)
+                train_datasets.append(ds)
+
+            formatted_train_dataset = concatenate_datasets(train_datasets)
+
+            # validation
+            val_ds = load_dataset("json", data_files=val_ds_path)["train"]
+            formatted_val_dataset = val_ds.map(self.add_messages_key)
 
             print(
                 f"Loaded dataset using standard approach (train: {len(formatted_train_dataset)}, val: {len(formatted_val_dataset)})"
