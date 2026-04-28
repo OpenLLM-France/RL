@@ -84,6 +84,39 @@ class PreservingDataset:
             mapped_data = [function(item) for item in self.data]
         return PreservingDataset(mapped_data)
 
+import glob
+import gzip
+import json
+import os
+
+
+def load_jsonl_files(paths) -> list:
+    """
+    Load records from one or more file paths or glob patterns.
+    Supports plain .jsonl and gzip-compressed .jsonl.gz files.
+    
+    Args:
+        paths: A str/Path, or a list of str/Path glob patterns.
+    
+    Returns:
+        A flat list of parsed JSON records.
+    """
+    if isinstance(paths, (str, os.PathLike)):
+        paths = [paths]
+
+    records = []
+    for pattern in paths:
+        matched = sorted(glob.glob(str(pattern), recursive=True))
+        if not matched:
+            print(f"Warning: no files matched pattern '{pattern}'")
+        for filepath in matched:
+            open_fn = gzip.open if filepath.endswith(".gz") else open
+            with open_fn(filepath, "rt", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        records.append(json.loads(line))
+    return records
 
 class OpenAIFormatDataset:
     """This class is used to load an SFT dataset in the OpenAI format.
@@ -190,27 +223,23 @@ class OpenAIFormatDataset:
             #   Sample 2: {"tools": [{"name": "calc", "args": {"expr": "y", "precision": 2}}]}
             # Standard loading would add "precision: None" to Sample 1 and "query: None" to Sample 2.
             # PreservingDataset maintains exact structure without None-filling.
+
             print(
                 "Using PreservingDataset to preserve heterogeneous tool argument schemas without None-filling."
             )
 
-            # Load JSON files directly
-            with open(train_ds_path, "r") as f:
-                train_data = [json.loads(line) for line in f]
+            train_data = load_jsonl_files(train_ds_path)
+            val_data   = load_jsonl_files(val_ds_path)
 
-            with open(val_ds_path, "r") as f:
-                val_data = [json.loads(line) for line in f]
-
-            # Apply transformations
             formatted_train_data = [self.add_messages_key(item) for item in train_data]
-            formatted_val_data = [self.add_messages_key(item) for item in val_data]
+            formatted_val_data   = [self.add_messages_key(item) for item in val_data]
 
-            # Use PreservingDataset to maintain exact structure
             formatted_train_dataset = PreservingDataset(formatted_train_data)
-            formatted_val_dataset = PreservingDataset(formatted_val_data)
+            formatted_val_dataset   = PreservingDataset(formatted_val_data)
 
             print(
-                f"Loaded dataset using PreservingDataset (train: {len(formatted_train_dataset)}, val: {len(formatted_val_dataset)})"
+                f"Loaded dataset using PreservingDataset "
+                f"(train: {len(formatted_train_dataset)}, val: {len(formatted_val_dataset)})"
             )
 
         self.formatted_ds = {
@@ -377,7 +406,7 @@ class OpenAIFormatDatasetMultiFiles:
             ] + messages
         elif self.system_prompt:
             messages = [{"role": "system", "content": self.system_prompt}] + messages
-        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["role"] == "assistant", messages
 
         # Preserve tools if they exist in the data
         result = {"messages": messages}
