@@ -67,14 +67,22 @@ def to_preference_data_format(
 class Tulu3PreferenceDataset:
     """Tulu3 preference dataset for DPO training."""
 
-    def __init__(self) -> None:
+    def __init__(
+            self,
+            dataset_path: str = "allenai/llama-3.1-tulu-3-8b-preference-mixture",
+            split: str = "train",
+            subset_name: str | None = None,
+        ) -> None:
         ds = load_dataset(
-            path="allenai/llama-3.1-tulu-3-8b-preference-mixture",
+            path=dataset_path,
+            name=subset_name,
+            split=split,
             trust_remote_code=True,
         )
-        self.formatted_ds = ds.map(to_preference_data_format)
-        # Tulu3 preference dataset has no validation set
-        self.formatted_ds["validation"] = None
+        self.formatted_ds = {
+            "train": ds.map(to_preference_data_format),
+            "validation": None,  # Tulu3 preference dataset has no validation set
+        }
 
         self.task_spec = TaskDataSpec(
             task_name="Tulu3Preference",

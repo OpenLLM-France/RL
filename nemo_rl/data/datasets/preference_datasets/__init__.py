@@ -29,7 +29,17 @@ def load_preference_dataset(data_config):
     if dataset_name == "HelpSteer3":
         base_dataset = HelpSteer3Dataset()
     elif dataset_name == "Tulu3Preference":
-        base_dataset = Tulu3PreferenceDataset()
+        extra_kwargs = get_extra_kwargs(
+            data_config,
+            [
+                "dataset_path",
+                "split",
+                "subset_name",
+            ],
+        )
+        base_dataset = Tulu3PreferenceDataset(
+            **extra_kwargs,
+        )
     # fall back to load from JSON file
     elif dataset_name == "BinaryPreferenceDataset":
         if "train_data_path" not in data_config:
