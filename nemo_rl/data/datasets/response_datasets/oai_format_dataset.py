@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import math
+import random
 import warnings
 from typing import Any, Callable, Union, List
 
@@ -118,6 +120,40 @@ def load_jsonl_files(paths) -> list:
                         records.append(json.loads(line))
     return records
 
+
+def _normalize_weighted_paths(paths) -> list[tuple[str, float]]:
+    """Normalize a path or list of paths/`(path, weight)` entries to `[(path, weight), ...]`.
+
+    Accepts a bare string, a list of strings, a list of `(path, weight)` tuples,
+    a list of `[path, weight]` lists (as produced by YAML), or a mix. Bare paths
+    default to weight 1.0. Each weight must satisfy ``0 < weight <= 1.0``.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+
+    out: list[tuple[str, float]] = []
+    for entry in paths:
+        if isinstance(entry, str):
+            path, weight = entry, 1.0
+        elif isinstance(entry, (tuple, list)) and len(entry) == 2:
+            path, weight = entry
+        else:
+            raise ValueError(
+                f"Each train_ds_path entry must be a path or a (path, weight) pair; got {entry!r}."
+            )
+        if weight > 1.0:
+            raise ValueError(
+                f"weight for {path!r} must be <= 1.0; got {weight}. "
+                "Oversampling (weight > 1) is not supported."
+            )
+        if weight <= 0:
+            raise ValueError(
+                f"weight for {path!r} must be > 0; got {weight}."
+            )
+        out.append((str(path), float(weight)))
+    return out
+
+
 class OpenAIFormatDataset:
     """This class is used to load an SFT dataset in the OpenAI format.
 
@@ -131,8 +167,16 @@ class OpenAIFormatDataset:
     }
 
     Args:
-        train_ds_path: Path to the training dataset JSON file
-        val_ds_path: Path to the validation dataset JSON file
+        train_ds_path: Path(s) to the training dataset JSON file(s). Can be:
+            - a single path (str)
+            - a list of paths
+            - a list mixing paths and ``(path, weight)`` pairs, where
+              ``0 < weight <= 1.0`` randomly subsamples that file to
+              ``floor(len * weight)`` records. Bare paths default to weight 1.0.
+              Oversampling (weight > 1) is not supported.
+        val_ds_path: Path to the validation dataset JSON file. Pass ``None``
+            (or YAML ``null``) to skip validation; ``formatted_ds["validation"]``
+            will then be ``None``.
         chat_key: Key for the messages list in the dataset (default: "messages")
         system_key: Optional key for system prompt in the dataset
         system_prompt: Optional system prompt to add if not in the dataset
@@ -141,6 +185,8 @@ class OpenAIFormatDataset:
             heterogeneous schemas (e.g., for tool calls with varying argument
             structures). If False, uses standard HuggingFace dataset loading.
             Default is False for backward compatibility.
+        subsample_seed: Seed used when randomly subsampling files with weight < 1.0.
+            Same seed yields the same kept records across runs.
 
     Notes:
         - system_key and system_prompt are optional. If provided, it will be added
@@ -155,31 +201,32 @@ class OpenAIFormatDataset:
 
     def __init__(
         self,
-        train_ds_path: str | List[str],
-        val_ds_path: str,
+        train_ds_path: Union[str, List[Union[str, tuple[str, float]]]],
+        val_ds_path: str | None,
         chat_key: str = "messages",
         system_key: str | None = None,
         system_prompt: str | None = None,
         tool_key: str | None = "tools",
         use_preserving_dataset: bool = False,
+        subsample_seed: int = 42,
     ):
         self.chat_key = chat_key
         self.system_key = system_key
         self.system_prompt = system_prompt
         self.tool_key = tool_key
 
-        if not use_preserving_dataset:
+        weighted_train_paths = _normalize_weighted_paths(train_ds_path)
 
-            # normalize input
-            if isinstance(train_ds_path, str):
-                train_ds_path = [train_ds_path]
+        if not use_preserving_dataset:
 
             train_datasets = []
 
-            for train_path in train_ds_path:
-                print(train_path)
+            for train_path, weight in weighted_train_paths:
                 ds = load_dataset("json", data_files=train_path)["train"]
-                print(len(ds))
+                if weight < 1.0:
+                    n = math.floor(len(ds) * weight)
+                    ds = ds.shuffle(seed=subsample_seed).select(range(n))
+                print(f"  - {Path(train_path).stem} ({train_path}): {len(ds)} samples (weight={weight})")
                 cols_to_keep = [chat_key]
                 if system_key is not None:
                     cols_to_keep.append(system_key)
@@ -196,11 +243,15 @@ class OpenAIFormatDataset:
             formatted_train_dataset = concatenate_datasets(train_datasets)
 
             # validation
-            val_ds = load_dataset("json", data_files=val_ds_path)["train"]
-            formatted_val_dataset = val_ds.map(self.add_messages_key)
+            if val_ds_path is None:
+                formatted_val_dataset = None
+            else:
+                val_ds = load_dataset("json", data_files=val_ds_path)["train"]
+                formatted_val_dataset = val_ds.map(self.add_messages_key)
 
+            val_len = len(formatted_val_dataset) if formatted_val_dataset is not None else 0
             print(
-                f"Loaded dataset using standard approach (train: {len(formatted_train_dataset)}, val: {len(formatted_val_dataset)})"
+                f"Loaded dataset using standard approach (train: {len(formatted_train_dataset)}, val: {val_len})"
             )
 
             # Warn if tools are present in the dataset
@@ -228,18 +279,31 @@ class OpenAIFormatDataset:
                 "Using PreservingDataset to preserve heterogeneous tool argument schemas without None-filling."
             )
 
-            train_data = load_jsonl_files(train_ds_path)
-            val_data   = load_jsonl_files(val_ds_path)
+            train_data: list = []
+            for train_path, weight in weighted_train_paths:
+                records = load_jsonl_files(train_path)
+                if weight < 1.0:
+                    n = math.floor(len(records) * weight)
+                    records = random.Random(subsample_seed).sample(records, n)
+                print(f"  - {Path(train_path).stem} ({train_path}): {len(records)} samples (weight={weight})")
+                train_data.extend(records)
 
             formatted_train_data = [self.add_messages_key(item) for item in train_data]
-            formatted_val_data   = [self.add_messages_key(item) for item in val_data]
+            if val_ds_path is None:
+                formatted_val_data = None
+            else:
+                val_data = load_jsonl_files(val_ds_path)
+                formatted_val_data = [self.add_messages_key(item) for item in val_data]
 
             formatted_train_dataset = PreservingDataset(formatted_train_data)
-            formatted_val_dataset   = PreservingDataset(formatted_val_data)
+            formatted_val_dataset = (
+                PreservingDataset(formatted_val_data) if formatted_val_data is not None else None
+            )
 
+            val_len = len(formatted_val_dataset) if formatted_val_dataset is not None else 0
             print(
                 f"Loaded dataset using PreservingDataset "
-                f"(train: {len(formatted_train_dataset)}, val: {len(formatted_val_dataset)})"
+                f"(train: {len(formatted_train_dataset)}, val: {val_len})"
             )
 
         self.formatted_ds = {
@@ -317,6 +381,14 @@ class OpenAIFormatDatasetMultiFiles:
         tool_key: str | None = "tools",
         use_preserving_dataset: bool = False,
     ):
+        warnings.warn(
+            "OpenAIFormatDatasetMultiFiles is deprecated. "
+            "Use OpenAIFormatDataset with a recursive glob pattern instead "
+            "(e.g. train_data_path='my_folder/**/*.jsonl').",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.chat_key = chat_key
         self.system_key = system_key
         self.system_prompt = system_prompt
@@ -352,39 +424,7 @@ class OpenAIFormatDatasetMultiFiles:
                 )
 
         else:
-            # Use custom loading for heterogeneous schemas
-            # Issue: When tool calls have varying argument structures across samples,
-            # HuggingFace's Dataset.from_list enforces uniform schema by adding None
-            # values for missing keys. Example:
-            #   Sample 1: {"tools": [{"name": "search", "args": {"query": "x"}}]}
-            #   Sample 2: {"tools": [{"name": "calc", "args": {"expr": "y", "precision": 2}}]}
-            # Standard loading would add "precision: None" to Sample 1 and "query: None" to Sample 2.
-            # PreservingDataset maintains exact structure without None-filling.
-            print(
-                "Using PreservingDataset to preserve heterogeneous tool argument schemas without None-filling."
-            )
-
-            # Load JSON files directly
-            train_data, val_data = []
-            for train_ds_path in train_ds_path_folder.rglob("*.jsonl"):
-                with open(str(train_ds_path), "r") as f:
-                    train_data += [json.loads(line) for line in f]
-            
-            for val_ds_path in val_ds_path_folder.rglob("*.jsonl"):
-                with open(str(val_ds_path), "r") as f:
-                    val_data += [json.loads(line) for line in f]
-
-            # Apply transformations
-            formatted_train_data = [self.add_messages_key(item) for item in train_data]
-            formatted_val_data = [self.add_messages_key(item) for item in val_data]
-
-            # Use PreservingDataset to maintain exact structure
-            formatted_train_dataset = PreservingDataset(formatted_train_data)
-            formatted_val_dataset = PreservingDataset(formatted_val_data)
-
-            print(
-                f"Loaded dataset using PreservingDataset (train: {len(formatted_train_dataset)}, val: {len(formatted_val_dataset)})"
-            )
+            raise NotImplementedError
 
         self.formatted_ds = {
             "train": formatted_train_dataset,

@@ -64,6 +64,7 @@ def load_response_dataset(data_config, seed: int = 42):
             data_config["system_prompt"],
             data_config["tool_key"],
             data_config["use_preserving_dataset"],
+            subsample_seed=data_config.get("subsample_seed", seed),
         )
     elif dataset_name == "openai_format_multifiles":
         base_dataset = OpenAIFormatDatasetMultiFiles(
