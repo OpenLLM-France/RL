@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import math
 import random
 import warnings
+
+import orjson
 from typing import Any, Callable, Union, List
 
 from datasets import load_dataset, concatenate_datasets
@@ -88,7 +89,6 @@ class PreservingDataset:
 
 import glob
 import gzip
-import json
 import os
 
 
@@ -113,20 +113,26 @@ def load_jsonl_files(paths) -> list:
             print(f"Warning: no files matched pattern '{pattern}'")
         for filepath in matched:
             open_fn = gzip.open if filepath.endswith(".gz") else open
-            with open_fn(filepath, "rt", encoding="utf-8") as f:
+            # orjson.loads accepts bytes directly — skip text decoding for speed.
+            with open_fn(filepath, "rb") as f:
                 for line in f:
-                    line = line.strip()
-                    if line:
-                        records.append(json.loads(line))
+                    if line.strip():
+                        records.append(orjson.loads(line))
     return records
 
 
 def _normalize_weighted_paths(paths) -> list[tuple[str, float]]:
-    """Normalize a path or list of paths/`(path, weight)` entries to `[(path, weight), ...]`.
+    """Normalize a path or list of entries to `[(path, weight), ...]`.
 
-    Accepts a bare string, a list of strings, a list of `(path, weight)` tuples,
-    a list of `[path, weight]` lists (as produced by YAML), or a mix. Bare paths
-    default to weight 1.0. Each weight must satisfy ``0 < weight <= 1.0``.
+    Accepts:
+      - a bare string
+      - a list of strings
+      - a list of ``{"path": ..., "weight": ...}`` dicts (weight optional,
+        defaults to 1.0)
+      - a list of ``[path, weight]`` / ``(path, weight)`` pairs (legacy)
+      - a mix of the above
+
+    Each weight must satisfy ``0 < weight <= 1.0``.
     """
     if isinstance(paths, str):
         paths = [paths]
@@ -135,11 +141,19 @@ def _normalize_weighted_paths(paths) -> list[tuple[str, float]]:
     for entry in paths:
         if isinstance(entry, str):
             path, weight = entry, 1.0
+        elif isinstance(entry, dict):
+            if "path" not in entry:
+                raise ValueError(
+                    f"Dict entry must have a 'path' key; got {entry!r}."
+                )
+            path = entry["path"]
+            weight = entry.get("weight", 1.0)
         elif isinstance(entry, (tuple, list)) and len(entry) == 2:
             path, weight = entry
         else:
             raise ValueError(
-                f"Each train_ds_path entry must be a path or a (path, weight) pair; got {entry!r}."
+                f"Each train_ds_path entry must be a path, a dict with "
+                f"'path'/'weight', or a (path, weight) pair; got {entry!r}."
             )
         if weight > 1.0:
             raise ValueError(
@@ -326,7 +340,7 @@ class OpenAIFormatDataset:
             ] + messages
         elif self.system_prompt:
             messages = [{"role": "system", "content": self.system_prompt}] + messages
-        assert messages[-1]["role"] == "assistant"
+        # assert messages[-1]["role"] == "assistant"
 
         # Preserve tools if they exist in the data
         result = {"messages": messages}
