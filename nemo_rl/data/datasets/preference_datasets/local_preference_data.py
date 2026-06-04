@@ -77,7 +77,8 @@ class LocalPreferenceDataset:
             dataset_paths = [dataset_paths]
 
         datasets = [
-            load_dataset(path, split=split) #  it will infer .jsonl format based on the file extension
+            load_dataset("json", data_files=path, split=split) if ".json" in path
+            else load_dataset(path, split=split)
             for path in dataset_paths
         ]
 
