@@ -19,6 +19,7 @@ from nemo_rl.data.datasets.preference_datasets.preference_dataset import (
     PreferenceDataset,
 )
 from nemo_rl.data.datasets.preference_datasets.tulu3 import Tulu3PreferenceDataset
+from nemo_rl.data.datasets.preference_datasets.local_preference_data import LocalPreferenceDataset
 from nemo_rl.data.datasets.utils import get_extra_kwargs
 
 
@@ -41,6 +42,17 @@ def load_preference_dataset(data_config):
             **extra_kwargs,
         )
     # fall back to load from JSON file
+    elif dataset_name == "LocalPreferenceDataset":
+        extra_kwargs = get_extra_kwargs(
+            data_config,
+            [
+                "dataset_paths",
+                "split",
+            ],
+        )
+        base_dataset = LocalPreferenceDataset(
+            **extra_kwargs,
+        )
     elif dataset_name == "BinaryPreferenceDataset":
         if "train_data_path" not in data_config:
             raise ValueError(
@@ -93,4 +105,5 @@ __all__ = [
     "HelpSteer3Dataset",
     "PreferenceDataset",
     "Tulu3PreferenceDataset",
+    "LocalPreferenceDataset"
 ]
