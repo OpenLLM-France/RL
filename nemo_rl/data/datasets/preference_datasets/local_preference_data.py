@@ -82,6 +82,9 @@ class LocalPreferenceDataset:
             for path in dataset_paths
         ]
 
+        for i in range(len(datasets)):
+            datasets[i] = datasets[i].remove_columns([k for k in datasets[i].column_names if k!='chosen' and k!='rejected'])
+
         ds = concatenate_datasets(datasets)
 
         self.formatted_ds = {
