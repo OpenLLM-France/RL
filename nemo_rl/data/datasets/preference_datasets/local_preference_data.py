@@ -63,27 +63,76 @@ def to_preference_data_format(
         ],
     }
 
+def _normalize_weighted_paths(paths) -> list[tuple[str, float]]:
+    """Normalize a path or list of entries to `[(path, weight), ...]`.
+
+    Accepts:
+      - a bare string
+      - a list of strings
+      - a list of ``{"path": ..., "weight": ...}`` dicts (weight optional,
+        defaults to 1.0)
+      - a list of ``[path, weight]`` / ``(path, weight)`` pairs (legacy)
+      - a mix of the above
+
+    Each weight must satisfy ``0 < weight <= 1.0``.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+
+    out: list[tuple[str, float]] = []
+    for entry in paths:
+        if isinstance(entry, str):
+            path, weight = entry, 1.0
+        elif isinstance(entry, dict):
+            if "path" not in entry:
+                raise ValueError(
+                    f"Dict entry must have a 'path' key; got {entry!r}."
+                )
+            path = entry["path"]
+            weight = entry.get("weight", 1.0)
+        elif isinstance(entry, (tuple, list)) and len(entry) == 2:
+            path, weight = entry
+        else:
+            raise ValueError(
+                f"Each train_ds_path entry must be a path, a dict with "
+                f"'path'/'weight', or a (path, weight) pair; got {entry!r}."
+            )
+        if weight > 1.0:
+            raise ValueError(
+                f"weight for {path!r} must be <= 1.0; got {weight}. "
+                "Oversampling (weight > 1) is not supported."
+            )
+        if weight <= 0:
+            raise ValueError(
+                f"weight for {path!r} must be > 0; got {weight}."
+            )
+        out.append((str(path), float(weight)))
+    return out
 
 class LocalPreferenceDataset:
     """Local preference dataset for DPO training."""
 
     def __init__(
             self,
-            dataset_paths: str | list[str] = [],
+            dataset_paths: Union[str, List[Union[str, tuple[str, float]]]],
             split: str = "train",
         ) -> None:
 
         if isinstance(dataset_paths, str):
             dataset_paths = [dataset_paths]
 
-        datasets = [
-            load_dataset("json", data_files=path, split=split) if ".json" in path
-            else load_dataset(path, split=split)
-            for path in dataset_paths
-        ]
+        weighted_dataset_paths = _normalize_weighted_paths(dataset_paths)
 
-        for i in range(len(datasets)):
-            datasets[i] = datasets[i].remove_columns([k for k in datasets[i].column_names if k!='chosen' and k!='rejected'])
+        datasets = []
+        cols_to_keep = ["chosen","rejected"]
+        for train_path, weight in weighted_train_paths:
+            ds = load_dataset("json", data_files=train_path)["train"]
+            if weight < 1.0:
+                n = math.floor(len(ds) * weight)
+                ds = ds.shuffle(seed=subsample_seed).select(range(n))
+            print(f"  - {Path(train_path).stem} ({train_path}): {len(ds)} samples (weight={weight})")
+            ds = ds.remove_columns([c for c in ds.column_names if c not in cols_to_keep])
+            datasets.append(ds)
 
         ds = concatenate_datasets(datasets)
 
