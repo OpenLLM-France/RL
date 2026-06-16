@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import json
-from typing import Any
+from typing import Any, Callable, Union, List
 
 from datasets import load_dataset, concatenate_datasets
-
+from pathlib import Path
+import math
 from nemo_rl.data.interfaces import TaskDataSpec
 
 
@@ -116,6 +117,7 @@ class LocalPreferenceDataset:
             self,
             dataset_paths: Union[str, List[Union[str, tuple[str, float]]]],
             split: str = "train",
+            subsample_seed: int = 42,
         ) -> None:
 
         if isinstance(dataset_paths, str):
@@ -125,7 +127,7 @@ class LocalPreferenceDataset:
 
         datasets = []
         cols_to_keep = ["chosen","rejected"]
-        for train_path, weight in weighted_train_paths:
+        for train_path, weight in weighted_dataset_paths:
             ds = load_dataset("json", data_files=train_path)["train"]
             if weight < 1.0:
                 n = math.floor(len(ds) * weight)
