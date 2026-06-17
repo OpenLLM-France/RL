@@ -55,6 +55,7 @@ def dpo_preprocessor(
     tokenizer,
     max_seq_length: int,
     idx: int,
+    add_generation_prompt: bool = False,
 ) -> DatumSpec:
     """Process a datum dictionary for DPO training.
 
@@ -126,10 +127,10 @@ def dpo_preprocessor(
     messages_rejected = datum_dict["context"] + rejected_completion["completion"]
 
     message_log_chosen = get_formatted_message_log(
-        messages_chosen, tokenizer, task_data_spec
+        messages_chosen, tokenizer, task_data_spec, add_generation_prompt=add_generation_prompt
     )
     message_log_rejected = get_formatted_message_log(
-        messages_rejected, tokenizer, task_data_spec
+        messages_rejected, tokenizer, task_data_spec, add_generation_prompt=add_generation_prompt
     )
 
     length_chosen = sum(len(m["token_ids"]) for m in message_log_chosen)
@@ -183,6 +184,7 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig):
         dpo_task_spec,
         dpo_preprocessor,
         max_seq_length=data_config["max_input_seq_length"],
+        add_generation_prompt=data_config["add_generation_prompt"],
     )
 
     # TODO @yukih: unify the code when support multiple datasets for other algorithms
@@ -206,6 +208,7 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig):
                 val_data.task_spec,
                 dpo_preprocessor,
                 max_seq_length=data_config["max_input_seq_length"],
+                add_generation_prompt=data_config["add_generation_prompt"],
             )
     else:
         val_dataset = (
@@ -216,6 +219,7 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig):
                     dpo_task_spec,
                     dpo_preprocessor,
                     max_seq_length=data_config["max_input_seq_length"],
+                    add_generation_prompt=data_config["add_generation_prompt"],
                 )
             }
             if val_dataset
