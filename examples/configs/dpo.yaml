@@ -164,6 +164,7 @@ policy:
     
 data:
   max_input_seq_length: ${policy.max_total_sequence_length}
+  add_generation_prompt: false
   shuffle: true
   num_workers: 1
 

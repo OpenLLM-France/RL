@@ -16,6 +16,7 @@ import argparse
 import os
 import pprint
 import warnings
+from functools import partial
 from typing import Any
 
 from omegaconf import OmegaConf
@@ -182,9 +183,11 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig):
         train_dataset,
         tokenizer,
         dpo_task_spec,
-        dpo_preprocessor,
+        partial(
+            dpo_preprocessor,
+            add_generation_prompt=data_config["add_generation_prompt"],
+        ),
         max_seq_length=data_config["max_input_seq_length"],
-        add_generation_prompt=data_config["add_generation_prompt"],
     )
 
     # TODO @yukih: unify the code when support multiple datasets for other algorithms
@@ -206,9 +209,11 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig):
                 val_data.formatted_ds["train"],
                 tokenizer,
                 val_data.task_spec,
-                dpo_preprocessor,
+                partial(
+                    dpo_preprocessor,
+                    add_generation_prompt=data_config["add_generation_prompt"],
+                ),
                 max_seq_length=data_config["max_input_seq_length"],
-                add_generation_prompt=data_config["add_generation_prompt"],
             )
     else:
         val_dataset = (
@@ -217,9 +222,11 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig):
                     val_dataset,
                     tokenizer,
                     dpo_task_spec,
-                    dpo_preprocessor,
+                    partial(
+                        dpo_preprocessor,
+                        add_generation_prompt=data_config["add_generation_prompt"],
+                    ),
                     max_seq_length=data_config["max_input_seq_length"],
-                    add_generation_prompt=data_config["add_generation_prompt"],
                 )
             }
             if val_dataset
