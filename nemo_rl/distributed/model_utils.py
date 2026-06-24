@@ -12,10 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 from megatron.core.models.gpt import GPTModel
+
+if TYPE_CHECKING:
+    # Imported lazily inside the patcher at runtime to avoid eagerly pulling in
+    # mamba_ssm / causal_conv1d, which are not installed in all environments.
+    from megatron.core.models.mamba import MambaModel
 from megatron.core.parallel_state import (
     get_tensor_model_parallel_group,
     get_tensor_model_parallel_rank,
@@ -2165,6 +2170,146 @@ def _gpt_forward_with_linear_ce_fusion(
         inference_only=inference_context is not None and not self.training,
         tp_group=get_tensor_model_parallel_group(),
         cp_group=self.cp_group,
+        chunk_size=self._linear_ce_fusion_chunk_size,
+    )
+    return logprobs
+
+
+def patch_mamba_model_forward_for_linear_ce_fusion(*, chunk_size: int) -> None:
+    from megatron.core.models.mamba import MambaModel
+
+    if getattr(MambaModel, "_linear_ce_fusion_forward_patched", False):
+        MambaModel._linear_ce_fusion_chunk_size = chunk_size
+        return
+    MambaModel._original_forward_for_linear_ce_fusion = MambaModel.forward
+    MambaModel._linear_ce_fusion_chunk_size = chunk_size
+    MambaModel.forward = _mamba_forward_with_linear_ce_fusion
+    MambaModel._linear_ce_fusion_forward_patched = True
+
+
+def _mamba_forward_with_linear_ce_fusion(
+    self: "MambaModel",
+    input_ids: torch.Tensor,
+    position_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    decoder_input: torch.Tensor = None,
+    labels: torch.Tensor = None,
+    inference_context: Any = None,
+    runtime_gather_output: Optional[bool] = None,
+    *,
+    inference_params: Optional[Any] = None,
+    loss_mask: Optional[torch.Tensor] = None,
+    packed_seq_params: Any = None,
+    padding_mask: Optional[torch.Tensor] = None,
+    is_spec_decode: Optional[bool] = None,
+    return_logprobs_for_linear_ce_fusion: bool = False,
+) -> torch.Tensor:
+    from megatron.core.parallel_state import (
+        get_tensor_model_parallel_group,
+        get_tensor_model_parallel_rank,
+    )
+    from megatron.core.utils import deprecate_inference_params, get_pg_size
+
+    if not return_logprobs_for_linear_ce_fusion:
+        return self._original_forward_for_linear_ce_fusion(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            decoder_input=decoder_input,
+            labels=labels,
+            inference_context=inference_context,
+            runtime_gather_output=runtime_gather_output,
+            inference_params=inference_params,
+            loss_mask=loss_mask,
+            packed_seq_params=packed_seq_params,
+            padding_mask=padding_mask,
+            is_spec_decode=is_spec_decode,
+        )
+    """
+    original forward function signature:
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        decoder_input: Tensor = None,
+        labels: Tensor = None,
+        inference_context: BaseInferenceContext = None,
+        runtime_gather_output: Optional[bool] = None,
+        *,
+        inference_params: Optional[BaseInferenceContext] = None,
+        loss_mask: Optional[Tensor] = None,
+        packed_seq_params: Optional[PackedSeqParams] = None,
+        padding_mask: Optional[Tensor] = None,
+        is_spec_decode: Optional[bool] = None,
+    ) -> Tensor:
+    """
+    if labels is None:
+        raise ValueError("labels must be provided when linear CE fusion is enabled")
+
+    inference_context = deprecate_inference_params(inference_context, inference_params)
+
+    # Decoder embedding (mirrors MambaModel.forward; Mamba has no _preprocess helper).
+    if decoder_input is not None:
+        pass
+    elif self.pre_process:
+        decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+    else:
+        # intermediate pipeline stage: decoder gets hidden states from input_tensor
+        decoder_input = None
+
+    rotary_pos_emb = None
+    if self.position_embedding_type == "rope":
+        rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
+            inference_context,
+            self.decoder,
+            decoder_input,
+            self.config,
+            packed_seq_params,
+        )
+        rotary_pos_emb = self.rotary_pos_emb(
+            rotary_seq_len,
+            packed_seq=packed_seq_params is not None
+            and packed_seq_params.qkv_format == "thd",
+        )
+
+    hidden_states = self.decoder(
+        hidden_states=decoder_input,
+        attention_mask=attention_mask,
+        inference_context=inference_context,
+        rotary_pos_emb=rotary_pos_emb,
+        packed_seq_params=packed_seq_params,
+        padding_mask=padding_mask,
+    )
+
+    # Non post-process pipeline stages do not own the output layer.
+    if not self.post_process or not hasattr(self, "output_layer"):
+        return hidden_states
+
+    tp_rank = get_tensor_model_parallel_rank()
+    tp_size = get_pg_size(get_tensor_model_parallel_group())
+    # calculate the logprobs for the last token and then return the logprobs
+    vocab_start_index = tp_rank * (self.vocab_size // tp_size)
+    vocab_end_index = min((tp_rank + 1) * (self.vocab_size // tp_size), self.vocab_size)
+    # For models with tied embeddings, self.output_layer.weight is None — the real
+    # weight lives on the embedding and must be fetched via
+    # shared_embedding_or_output_weight().
+    output_weight_layer = (
+        self.shared_embedding_or_output_weight()
+        if self.share_embeddings_and_output_weights
+        else self.output_layer.weight
+    )
+    logprobs = from_parallel_hidden_states_to_logprobs(
+        hidden_states,
+        output_weight_layer,
+        output_weight_layer,
+        runtime_gather_output,
+        labels,
+        vocab_start_index=vocab_start_index,
+        vocab_end_index=vocab_end_index,
+        inference_only=inference_context is not None and not self.training,
+        tp_group=get_tensor_model_parallel_group(),
+        cp_group=self.pg_collection.cp,
         chunk_size=self._linear_ce_fusion_chunk_size,
     )
     return logprobs

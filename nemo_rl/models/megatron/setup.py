@@ -62,7 +62,10 @@ from megatron.core.transformer.module import Float16Module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from transformers import PreTrainedTokenizerBase
 
-from nemo_rl.distributed.model_utils import patch_gpt_model_forward_for_linear_ce_fusion
+from nemo_rl.distributed.model_utils import (
+    patch_gpt_model_forward_for_linear_ce_fusion,
+    patch_mamba_model_forward_for_linear_ce_fusion,
+)
 
 try:
     from megatron.core.distributed import (
@@ -874,9 +877,11 @@ def setup_model_and_optimizer(
     pg_collection = ProcessGroupCollection.use_mpu_process_groups()
     setattr(megatron_cfg.model, "_pg_collection", pg_collection)
     if policy_cfg["megatron_cfg"].get("use_linear_ce_fusion_loss", False):
-        patch_gpt_model_forward_for_linear_ce_fusion(
-            chunk_size=policy_cfg["megatron_cfg"]["linear_ce_fusion_chunk_size"]
-        )
+        chunk_size = policy_cfg["megatron_cfg"]["linear_ce_fusion_chunk_size"]
+        # Patch both model classes: the actual model may be a GPTModel or a
+        # (hybrid) MambaModel. Each patcher only affects its own class.
+        patch_gpt_model_forward_for_linear_ce_fusion(chunk_size=chunk_size)
+        patch_mamba_model_forward_for_linear_ce_fusion(chunk_size=chunk_size)
     model = get_model(
         megatron_cfg.model,
         megatron_cfg.ddp,
