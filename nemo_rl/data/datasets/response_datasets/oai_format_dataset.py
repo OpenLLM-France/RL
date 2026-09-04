@@ -19,9 +19,10 @@ import warnings
 import orjson
 from typing import Any, Callable, Union, List
 
-from datasets import load_dataset, concatenate_datasets
+from datasets import Dataset, load_dataset, concatenate_datasets
 from pathlib import Path
 
+from nemo_rl.data.datasets.utils import load_dataset_from_path
 from nemo_rl.data.interfaces import TaskDataSpec
 
 
@@ -121,6 +122,44 @@ def load_jsonl_files(paths) -> list:
     return records
 
 
+def load_dataset_columns(path, columns: list[str]) -> Dataset:
+    """Load `path` as a HuggingFace Dataset holding only `columns`.
+
+    json files are read with orjson and pruned to `columns` before Arrow sees
+    them: the json builder infers one schema per 10MB block and casts every
+    block onto the first one, which blows up on the `tools` column of the tool
+    calling datasets (each tool's `parameters` is a different struct, and the
+    same key can hold different types across samples) -- a column that is
+    dropped one line later anyway. Everything else (parquet, HuggingFace Hub)
+    keeps its columns pruned after loading.
+    """
+    if ".json" in str(path):
+        records = [
+            {key: record[key] for key in columns if key in record}
+            for record in load_jsonl_files(path)
+        ]
+        return Dataset.from_list(records)
+    ds = load_dataset_from_path(path)
+    return ds.remove_columns([c for c in ds.column_names if c not in columns])
+
+
+def load_records(path, columns: list[str] | None = None) -> list:
+    """Load records as plain dicts, keeping the structure of each sample.
+
+    json files are parsed directly (no schema unification, see PreservingDataset);
+    parquet files and HuggingFace datasets go through `load_dataset_from_path`,
+    which does unify the schema across samples. `columns` restricts what is
+    materialized in memory (the other columns of a parquet/Hub dataset, e.g. raw
+    text or generation traces, are dropped before building the python list).
+    """
+    if ".json" in str(path):
+        return load_jsonl_files(path)
+    ds = load_dataset_from_path(str(path))
+    if columns is not None:
+        ds = ds.remove_columns([c for c in ds.column_names if c not in columns])
+    return ds.to_list()
+
+
 def _normalize_weighted_paths(paths) -> list[tuple[str, float]]:
     """Normalize a path or list of entries to `[(path, weight), ...]`.
 
@@ -181,14 +220,19 @@ class OpenAIFormatDataset:
     }
 
     Args:
-        train_ds_path: Path(s) to the training dataset JSON file(s). Can be:
+        train_ds_path: Path(s) to the training dataset. Each path is a file or
+            glob pattern ending in .json/.jsonl (optionally compressed) or
+            .parquet -- local or remote, e.g.
+            "hf://datasets/OpenLLM-France/ReAct/data/**/*.parquet" -- or the name
+            of a dataset on the HuggingFace Hub. Can be:
             - a single path (str)
             - a list of paths
             - a list mixing paths and ``(path, weight)`` pairs, where
               ``0 < weight <= 1.0`` randomly subsamples that file to
               ``floor(len * weight)`` records. Bare paths default to weight 1.0.
               Oversampling (weight > 1) is not supported.
-        val_ds_path: Path to the validation dataset JSON file. Pass ``None``
+        val_ds_path: Path to the validation dataset, same accepted forms as
+            ``train_ds_path``. Pass ``None``
             (or YAML ``null``) to skip validation; ``formatted_ds["validation"]``
             will then be ``None``.
         chat_key: Key for the messages list in the dataset (default: "messages")
@@ -231,36 +275,43 @@ class OpenAIFormatDataset:
 
         weighted_train_paths = _normalize_weighted_paths(train_ds_path)
 
+        cols_to_keep = [chat_key]
+        if system_key is not None:
+            cols_to_keep.append(system_key)
+        if tool_key is not None:
+            cols_to_keep.append(tool_key)
+
         if not use_preserving_dataset:
 
             train_datasets = []
 
             for train_path, weight in weighted_train_paths:
-                ds = load_dataset("json", data_files=train_path)["train"]
+                print(f"  - loading {train_path} (weight={weight})", flush=True)
+                ds = load_dataset_columns(train_path, cols_to_keep)
                 if weight < 1.0:
                     n = math.floor(len(ds) * weight)
                     ds = ds.shuffle(seed=subsample_seed).select(range(n))
-                print(f"  - {Path(train_path).stem} ({train_path}): {len(ds)} samples (weight={weight})")
-                cols_to_keep = [chat_key]
-                if system_key is not None:
-                    cols_to_keep.append(system_key)
-                if tool_key is not None:
-                    cols_to_keep.append(tool_key)
-
-                ds = ds.remove_columns(
-                    [c for c in ds.column_names if c not in cols_to_keep]
-                )
+                print(f"    {Path(train_path).stem}: {len(ds)} samples")
 
                 ds = ds.map(self.add_messages_key)
                 train_datasets.append(ds)
 
-            formatted_train_dataset = concatenate_datasets(train_datasets)
+            try:
+                formatted_train_dataset = concatenate_datasets(train_datasets)
+            except Exception:
+                # the datasets loaded fine on their own but disagree on the
+                # schema of `messages`; say which ones before dying
+                print("Cannot concatenate the training datasets, schemas are:")
+                for (path, _), ds in zip(weighted_train_paths, train_datasets):
+                    print(f"  - {path}\n      {ds.features}")
+                raise
 
             # validation
             if val_ds_path is None:
                 formatted_val_dataset = None
             else:
-                val_ds = load_dataset("json", data_files=val_ds_path)["train"]
+                print(f"  - loading {val_ds_path} (validation)", flush=True)
+                val_ds = load_dataset_columns(val_ds_path, cols_to_keep)
                 formatted_val_dataset = val_ds.map(self.add_messages_key)
 
             val_len = len(formatted_val_dataset) if formatted_val_dataset is not None else 0
@@ -295,18 +346,20 @@ class OpenAIFormatDataset:
 
             train_data: list = []
             for train_path, weight in weighted_train_paths:
-                records = load_jsonl_files(train_path)
+                print(f"  - loading {train_path} (weight={weight})", flush=True)
+                records = load_records(train_path, cols_to_keep)
                 if weight < 1.0:
                     n = math.floor(len(records) * weight)
                     records = random.Random(subsample_seed).sample(records, n)
-                print(f"  - {Path(train_path).stem} ({train_path}): {len(records)} samples (weight={weight})")
+                print(f"    {Path(train_path).stem}: {len(records)} samples")
                 train_data.extend(records)
 
             formatted_train_data = [self.add_messages_key(item) for item in train_data]
             if val_ds_path is None:
                 formatted_val_data = None
             else:
-                val_data = load_jsonl_files(val_ds_path)
+                print(f"  - loading {val_ds_path} (validation)", flush=True)
+                val_data = load_records(val_ds_path, cols_to_keep)
                 formatted_val_data = [self.add_messages_key(item) for item in val_data]
 
             formatted_train_dataset = PreservingDataset(formatted_train_data)
