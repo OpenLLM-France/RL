@@ -13,7 +13,6 @@
 # limitations under the License.
 import base64
 import io
-import os
 from typing import Optional, Union
 
 import torch
@@ -62,14 +61,18 @@ def pil_to_base64(image: Image.Image, format: str = "PNG") -> str:
 
 
 def load_dataset_from_path(data_path: str, data_split: Optional[str] = "train"):
-    """Load a dataset from a json or huggingface dataset.
+    """Load a dataset from json/jsonl file(s), parquet file(s), or the HuggingFace Hub.
 
     Args:
-        data_path: The path to the dataset.
+        data_path: A file path or glob pattern ending in .json/.jsonl (optionally
+            compressed, e.g. .jsonl.gz) or .parquet, local or remote (e.g.
+            "hf://datasets/OpenLLM-France/ReAct/data/**/*.parquet"), or the name
+            of a dataset on the HuggingFace Hub.
         data_split: The split to load from the dataset.
     """
-    suffix = os.path.splitext(data_path)[-1]
-    if suffix in [".json", ".jsonl"]:
+    if ".parquet" in data_path:
+        raw_dataset = load_dataset("parquet", data_files=data_path)
+    elif ".json" in data_path:  # .json, .jsonl, .jsonl.gz, ...
         raw_dataset = load_dataset("json", data_files=data_path)
     else:
         raw_dataset = load_dataset(data_path)
