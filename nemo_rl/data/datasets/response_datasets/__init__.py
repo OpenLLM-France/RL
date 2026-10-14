@@ -20,6 +20,9 @@ from nemo_rl.data.datasets.response_datasets.geometry3k import Geometry3KDataset
 from nemo_rl.data.datasets.response_datasets.oai_format_dataset import (
     OpenAIFormatDataset, OpenAIFormatDatasetMultiFiles
 )
+from nemo_rl.data.datasets.response_datasets.oai_format_v2_dataset import (
+    OpenAIFormatDatasetV2,
+)
 from nemo_rl.data.datasets.response_datasets.oasst import OasstDataset
 from nemo_rl.data.datasets.response_datasets.openmathinstruct2 import (
     OpenMathInstruct2Dataset,
@@ -64,6 +67,14 @@ def load_response_dataset(data_config, seed: int = 42):
             data_config["system_prompt"],
             data_config["tool_key"],
             data_config["use_preserving_dataset"],
+            subsample_seed=data_config.get("subsample_seed", seed),
+        )
+    elif dataset_name == "openai_format_v2":
+        base_dataset = OpenAIFormatDatasetV2(
+            data_config["train_data_path"],
+            data_config.get("val_data_path"),
+            data_config.get("chat_key", "messages"),
+            data_config.get("tool_key", "tools"),
             subsample_seed=data_config.get("subsample_seed", seed),
         )
     elif dataset_name == "openai_format_multifiles":
@@ -140,6 +151,7 @@ __all__ = [
     "DAPOMath17KDataset",
     "Geometry3KDataset",
     "OpenAIFormatDataset",
+    "OpenAIFormatDatasetV2",
     "OasstDataset",
     "OpenMathInstruct2Dataset",
     "RefCOCODataset",

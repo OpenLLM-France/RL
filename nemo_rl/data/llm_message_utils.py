@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import warnings
 from typing import Any, Optional, Union, cast
 
@@ -448,6 +449,7 @@ def get_formatted_message_log(
     add_eos_token: bool = True,
     add_generation_prompt: bool = False,
     tools: Optional[list[dict[str, Any]]] = None,
+    chat_template_kwargs: Optional[Union[dict[str, Any], str]] = None,
 ) -> LLMMessageLogType:
     """Format and tokenize chat messages using the specified template.
 
@@ -459,6 +461,8 @@ def get_formatted_message_log(
         add_eos_token: Whether to add eos token to last message if it is not already present. Default: True
         add_generation_prompt: Whether to include assistant's generation prompt in user messages. Default: False
         tools: Optional list of tool/function definitions to pass to the chat template. Default: None
+        chat_template_kwargs: Optional per-sample kwargs (dict or json string) for apply_chat_template,
+            e.g. {"enable_thinking": False}. Override the tokenizer-level chat_template_kwargs. Default: None
     Returns:
         The message log with updated 'token_ids' and 'content' fields.
     """
@@ -535,8 +539,16 @@ def get_formatted_message_log(
             "tokenize": False,
             "add_special_tokens": False,
         }
-        if tools is not None:
+        if tools:
+            if isinstance(tools, str):
+                # tools stored as a json.dumps() string in the dataset
+                tools = json.loads(tools)
             template_kwargs["tools"] = tools
+
+        if chat_template_kwargs:
+            if isinstance(chat_template_kwargs, str):
+                chat_template_kwargs = json.loads(chat_template_kwargs)
+            template_kwargs.update(chat_template_kwargs)
 
         formatted_message: str = tokenizer.apply_chat_template(  # type: ignore
             message_log_strs[: i + 1], **template_kwargs
