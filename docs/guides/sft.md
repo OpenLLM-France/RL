@@ -233,6 +233,34 @@ Without `use_preserving_dataset: true`, the loader would incorrectly add:
 
 This corrupts your training data and can lead to models generating invalid tool calls. The `PreservingDataset` mode maintains the exact structure of each tool call.
 
+#### Several Files, Weights and Per-File Chat Template Options (`openai_format_v2`)
+
+`openai_format_v2` loads several files (or glob patterns: `.json` / `.jsonl`, optionally gzip-compressed, `.parquet`, local or `hf://`) as one dataset. Each entry of `data_path` is a path or a dict with:
+- `weight` (`0 < weight <= 1.0`, default 1.0): randomly keeps `floor(len * weight)` samples of the file (seeded by `subsample_seed`, else `seed`);
+- `chat_template_kwargs` (default `{}`): passed to `apply_chat_template()` for every sample of the file, e.g. to mix thinking and non-thinking data.
+
+```yaml
+data:
+  train:
+    dataset_name: openai_format_v2
+    data_path:
+      - /data/xlam/*.jsonl.gz
+      - path: /data/react/**/*.parquet
+        weight: 0.5
+        chat_template_kwargs: {enable_thinking: true}
+      - path: /data/swe/*.jsonl.gz
+        chat_template_kwargs: {enable_thinking: false}
+    tool_key: "tools"     # null drops the tools
+    seed: ${sft.seed}
+  validation:
+    dataset_name: openai_format_v2
+    data_path: /data/xlam_val/*.jsonl.gz
+  default:
+    processor: "sft_processor"
+```
+
+A sample can also carry its own `chat_template_kwargs` column (a dict or a JSON string, as in smoltalk2). The kwargs are merged key by key, by increasing priority: `policy.tokenizer.chat_template_kwargs`, the file's `chat_template_kwargs`, then the sample's. Store `tools` as a JSON string (`json.dumps(tools)`) when the tool schemas differ across samples: it is parsed back before `apply_chat_template()`, whereas a struct column is None-filled by Arrow as described above. `system_key`, `system_prompt` and `use_preserving_dataset` are not supported: put the system prompt in the data.
+
 
 ## Evaluate the Trained Model
 

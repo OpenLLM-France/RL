@@ -34,6 +34,9 @@ from nemo_rl.data.datasets.response_datasets.nemotron_cascade2_sft import (
 from nemo_rl.data.datasets.response_datasets.oai_format_dataset import (
     OpenAIFormatDataset,
 )
+from nemo_rl.data.datasets.response_datasets.oai_format_v2_dataset import (
+    OpenAIFormatDatasetV2,
+)
 from nemo_rl.data.datasets.response_datasets.oasst import OasstDataset
 from nemo_rl.data.datasets.response_datasets.openmathinstruct2 import (
     OpenMathInstruct2Dataset,
@@ -63,6 +66,7 @@ DATASET_REGISTRY = {
     "Nemotron-Cascade-2-SFT-Math": NemotronCascade2SFTMathDataset,
     # load from local JSONL file or HuggingFace
     "openai_format": OpenAIFormatDataset,
+    "openai_format_v2": OpenAIFormatDatasetV2,
     "NemoGymDataset": NemoGymDataset,
     "ResponseDataset": ResponseDataset,
 }
@@ -108,6 +112,7 @@ __all__ = [
     "NemotronCascade2SFTMathDataset",
     "OasstDataset",
     "OpenAIFormatDataset",
+    "OpenAIFormatDatasetV2",
     "OpenMathInstruct2Dataset",
     "RefCOCODataset",
     "ResponseDataset",
