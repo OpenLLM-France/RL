@@ -39,7 +39,10 @@ class DatasetSpec:
         weight: ``0 < weight <= 1.0``; randomly subsamples the file to
             ``floor(len * weight)`` records.
         chat_template_kwargs: passed to ``apply_chat_template`` for every sample
-            of the file, e.g. ``{"enable_thinking": False}``.
+            of the file, e.g. ``{"enable_thinking": False}``. Tools are given to
+            the template only if it defines ``tools``: ``tools: true`` passes
+            the ``tool_key`` column of each sample, a list is the tool set of
+            every sample of the file.
     """
 
     path: str
@@ -73,7 +76,18 @@ def parse_specs(paths: "str | dict | list | None") -> list[DatasetSpec]:
         return []
     if isinstance(paths, (str, dict, DatasetSpec)):
         paths = [paths]
-    return [DatasetSpec.parse(p) for p in paths]
+    specs = [DatasetSpec.parse(p) for p in paths]
+    seen: set[str] = set()
+    for spec in specs:
+        # the same path twice would be subsampled with the same seed, i.e. to
+        # the very same samples, which would then be seen twice
+        if spec.path in seen:
+            raise ValueError(
+                f"Dataset {spec.path!r} appears more than once; "
+                "list each dataset only once."
+            )
+        seen.add(spec.path)
+    return specs
 
 
 def _sample_template_kwargs(value: Any) -> dict[str, Any]:
@@ -88,12 +102,22 @@ def _sample_template_kwargs(value: Any) -> dict[str, Any]:
     return {k: v for k, v in value.items() if v is not None}
 
 
-def _load_columns(path: str, columns: list[str]) -> Dataset:
+def _sample_tools(value: Any) -> list | None:
+    """Per-sample tools column: a list or json string; None when empty."""
+    if isinstance(value, str):
+        value = json.loads(value) if value else None
+    return list(value) if value else None
+
+
+def _load_columns(path: str, columns: list[str], tool_key: str | None) -> Dataset:
     """`load_dataset_columns`, but a column that only some json records carry is kept.
 
     The shared loader takes the schema of `Dataset.from_list` from the first
     record, so e.g. a `chat_template_kwargs` missing there is dropped for the
     whole file. Missing values are filled with None here.
+
+    The `tool_key` column is kept as a json string: as a struct column, arrow
+    would give every tool the parameters of all the others, set to None.
     """
     if ".json" not in str(path):
         return load_dataset_columns(path, columns)
@@ -101,6 +125,10 @@ def _load_columns(path: str, columns: list[str]) -> Dataset:
         {key: record.get(key) for key in columns}
         for record in load_jsonl_files(path)
     ]
+    if tool_key is not None:
+        for r in records:
+            if r.get(tool_key) is not None and not isinstance(r[tool_key], str):
+                r[tool_key] = json.dumps(r[tool_key])
     # a column absent from every record would be an all-null column
     present = [c for c in columns if any(r[c] is not None for r in records)]
     return Dataset.from_list([{c: r[c] for c in present} for r in records])
@@ -119,6 +147,10 @@ class OpenAIFormatDatasetV2:
         "chat_template_kwargs": {"enable_thinking": true}  # optional
     }
 
+    Tools are passed to ``apply_chat_template`` as the ``tools`` key of
+    ``chat_template_kwargs``, only for the files whose ``chat_template_kwargs``
+    define ``tools`` (see `DatasetSpec`).
+
     Args:
         train_ds_path: a path, a dict, or a list of paths / dicts. A dict has the
             keys of `DatasetSpec`: ``path``, ``weight`` (default 1.0) and
@@ -132,8 +164,8 @@ class OpenAIFormatDatasetV2:
 
     The kwargs given to ``apply_chat_template`` are, by increasing priority:
     the global ``tokenizer.chat_template_kwargs``, the ``chat_template_kwargs``
-    of the file, then the per-sample ``chat_template_kwargs`` column (as in
-    smoltalk2), merged key by key.
+    of the file (its ``tools`` resolved as above), then the per-sample
+    ``chat_template_kwargs`` column (as in smoltalk2), merged key by key.
     """
 
     def __init__(
@@ -167,7 +199,11 @@ class OpenAIFormatDatasetV2:
         datasets = []
         for spec in specs:
             print(f"  - loading {spec.path} ({name}, weight={spec.weight})", flush=True)
-            ds = _load_columns(spec.path, self.cols_to_keep)
+            if spec.chat_template_kwargs.get("tools") is True and self.tool_key is None:
+                raise ValueError(
+                    f"{spec.path!r} sets tools: true but tool_key is None."
+                )
+            ds = _load_columns(spec.path, self.cols_to_keep, self.tool_key)
             if len(ds) == 0:
                 # e.g. a glob that matches no file only warns in the loader
                 raise ValueError(f"No sample found for {spec.path!r}.")
@@ -198,18 +234,21 @@ class OpenAIFormatDatasetV2:
     def add_messages_key(
         self, example: dict[str, Any], file_kwargs: dict[str, Any]
     ) -> dict[str, Any]:
-        """Map one raw sample to ``{messages, [tools], chat_template_kwargs}``.
+        """Map one raw sample to ``{messages, chat_template_kwargs}``.
 
         ``chat_template_kwargs`` is the file-level ``file_kwargs`` updated by the
         sample's own ``chat_template_kwargs`` column, serialized as a json string.
+        A file-level ``tools: true`` is replaced by the sample's ``tool_key``
+        column; without ``tools`` in ``file_kwargs``, no tools are passed.
         """
         messages = list(example[self.chat_key])
-        result: dict[str, Any] = {"messages": messages}
-        if self.tool_key and self.tool_key in example:
-            result["tools"] = example[self.tool_key]
+        kwargs = dict(file_kwargs)
+        tools = kwargs.pop("tools", None)
+        if tools is True:
+            tools = _sample_tools(example.get(self.tool_key))
+        if tools:
+            kwargs["tools"] = tools
+        kwargs.update(_sample_template_kwargs(example.get("chat_template_kwargs")))
         # Stored as a json string: samples with different keys would otherwise
         # be None-filled by the arrow schema.
-        result["chat_template_kwargs"] = json.dumps(
-            {**file_kwargs, **_sample_template_kwargs(example.get("chat_template_kwargs"))}
-        )
-        return result
+        return {"messages": messages, "chat_template_kwargs": json.dumps(kwargs)}

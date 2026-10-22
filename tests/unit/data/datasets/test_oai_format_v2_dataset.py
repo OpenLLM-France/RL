@@ -124,6 +124,25 @@ class TestParseSpecs:
         assert [s.path for s in specs] == ["a", "b", "c"]
         assert [s.weight for s in specs] == [1.0, 0.5, 1.0]
 
+    @pytest.mark.parametrize(
+        "entries",
+        [
+            ["a", "a"],
+            ["a", {"path": "a", "weight": 0.5}],
+            [{"path": "a", "weight": 0.5}, {"path": "b"}, DatasetSpec("a", 0.5)],
+        ],
+    )
+    def test_duplicate_path_rejected(self, entries):
+        with pytest.raises(ValueError, match="more than once"):
+            parse_specs(entries)
+
+    def test_duplicate_path_rejected_in_dataset(self, tmp_path):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0)])
+        with pytest.raises(ValueError, match="more than once"):
+            OpenAIFormatDatasetV2([p, p])
+        with pytest.raises(ValueError, match="more than once"):
+            OpenAIFormatDatasetV2(p, [p, {"path": p, "weight": 0.5}])
+
 
 # --------------------------------------------------------------------------
 # Loading
@@ -379,33 +398,86 @@ class TestChatTemplateKwargs:
 # --------------------------------------------------------------------------
 class TestTools:
     TOOL = {"type": "function", "function": {"name": "f", "parameters": {"x": 1}}}
+    TOOL2 = {"type": "function", "function": {"name": "g", "parameters": {"y": 2}}}
+    ON = {"chat_template_kwargs": {"tools": True}}
 
-    def test_tools_kept(self, tmp_path):
+    @pytest.mark.parametrize("as_str", [False, True])
+    def test_tools_true_uses_column(self, tmp_path, as_str):
+        tools = json.dumps([self.TOOL]) if as_str else [self.TOOL]
+        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=tools)])
+        ds = OpenAIFormatDatasetV2({"path": p, **self.ON}).formatted_ds["train"]
+        assert ds.column_names == ["messages", "chat_template_kwargs"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL]}]
+
+    @pytest.mark.parametrize("file_kwargs", [{}, {"tools": False}, {"tools": None}])
+    def test_tools_not_defined_drops_column(self, tmp_path, file_kwargs):
         p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=[self.TOOL])])
-        ds = OpenAIFormatDatasetV2(p).formatted_ds["train"]
-        assert ds[0]["tools"] == [self.TOOL]
+        ds = OpenAIFormatDatasetV2(
+            {"path": p, "chat_template_kwargs": file_kwargs}
+        ).formatted_ds["train"]
+        assert _kwargs(ds) == [{}]
 
-    def test_tools_json_string_kept(self, tmp_path):
-        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=json.dumps([self.TOOL]))])
-        ds = OpenAIFormatDatasetV2(p).formatted_ds["train"]
-        assert json.loads(ds[0]["tools"]) == [self.TOOL]
+    @pytest.mark.parametrize("empty", [None, [], ""])
+    def test_empty_tools_not_passed(self, tmp_path, empty):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=empty)])
+        ds = OpenAIFormatDatasetV2({"path": p, **self.ON}).formatted_ds["train"]
+        assert _kwargs(ds) == [{}]
 
-    def test_tool_key_none_drops_tools(self, tmp_path):
-        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=json.dumps([self.TOOL]))])
-        ds = OpenAIFormatDatasetV2(p, tool_key=None).formatted_ds["train"]
-        assert "tools" not in ds.column_names
+    def test_tools_not_none_filled(self, tmp_path):
+        # as a struct column, f would get g's parameter y = None and vice versa
+        p = _write_jsonl(
+            tmp_path / "a.jsonl",
+            [_sample(0, tools=[self.TOOL]), _sample(1, tools=[self.TOOL2])],
+        )
+        ds = OpenAIFormatDatasetV2({"path": p, **self.ON}).formatted_ds["train"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL]}, {"tools": [self.TOOL2]}]
+
+    def test_file_tools_list(self, tmp_path):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0), _sample(1, tools=[self.TOOL2])])
+        ds = OpenAIFormatDatasetV2(
+            {"path": p, "chat_template_kwargs": {"tools": [self.TOOL]}}
+        ).formatted_ds["train"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL]}] * 2
+
+    def test_sample_kwargs_override_tools(self, tmp_path):
+        p = _write_jsonl(
+            tmp_path / "a.jsonl",
+            [_sample(0, tools=[self.TOOL], chat_template_kwargs={"tools": [self.TOOL2]})],
+        )
+        ds = OpenAIFormatDatasetV2({"path": p, **self.ON}).formatted_ds["train"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL2]}]
 
     def test_custom_tool_key(self, tmp_path):
         p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, fns=json.dumps([self.TOOL]))])
-        ds = OpenAIFormatDatasetV2(p, tool_key="fns").formatted_ds["train"]
-        assert json.loads(ds[0]["tools"]) == [self.TOOL]
+        ds = OpenAIFormatDatasetV2({"path": p, **self.ON}, tool_key="fns").formatted_ds["train"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL]}]
 
-    def test_tools_in_only_some_files(self, tmp_path):
-        a = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=json.dumps([self.TOOL]))])
-        b = _write_jsonl(tmp_path / "b.jsonl", [_sample(1)])
-        # tools is a string column when present; a file without it gives None
-        ds = OpenAIFormatDatasetV2([a, b]).formatted_ds["train"]
-        assert len(ds) == 2
+    def test_tools_true_without_tool_key_rejected(self, tmp_path):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0)])
+        with pytest.raises(ValueError):
+            OpenAIFormatDatasetV2({"path": p, **self.ON}, tool_key=None)
+
+    def test_tool_key_none_drops_tools(self, tmp_path):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=[self.TOOL])])
+        ds = OpenAIFormatDatasetV2(p, tool_key=None).formatted_ds["train"]
+        assert _kwargs(ds) == [{}]
+
+    def test_per_file(self, tmp_path):
+        a = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=[self.TOOL])])
+        b = _write_jsonl(tmp_path / "b.jsonl", [_sample(1, tools=[self.TOOL2])])
+        c = _write_jsonl(tmp_path / "c.jsonl", [_sample(2)])
+        ds = OpenAIFormatDatasetV2(
+            [{"path": a, **self.ON}, b, {"path": c, **self.ON}]
+        ).formatted_ds["train"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL]}, {}, {}]
+
+    def test_parquet_tools(self, tmp_path):
+        path = tmp_path / "t.parquet"
+        Dataset.from_list(
+            [_sample(0, tools=json.dumps([self.TOOL])), _sample(1, tools=None)]
+        ).to_parquet(str(path))
+        ds = OpenAIFormatDatasetV2({"path": str(path), **self.ON}).formatted_ds["train"]
+        assert _kwargs(ds) == [{"tools": [self.TOOL]}, {}]
 
 
 # --------------------------------------------------------------------------
