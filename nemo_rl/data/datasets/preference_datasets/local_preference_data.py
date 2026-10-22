@@ -18,6 +18,7 @@ from typing import Any, Callable, Union, List
 from datasets import load_dataset, concatenate_datasets
 from pathlib import Path
 import math
+from nemo_rl.data.datasets.utils import load_dataset_from_path
 from nemo_rl.data.interfaces import TaskDataSpec
 
 
@@ -111,7 +112,12 @@ def _normalize_weighted_paths(paths) -> list[tuple[str, float]]:
     return out
 
 class LocalPreferenceDataset:
-    """Local preference dataset for DPO training."""
+    """Local preference dataset for DPO training.
+
+    Each entry of `dataset_paths` is a file or glob pattern ending in
+    .json/.jsonl (optionally compressed) or .parquet -- local or remote
+    ("hf://datasets/...") -- or the name of a dataset on the HuggingFace Hub.
+    """
 
     def __init__(
             self,
@@ -128,11 +134,12 @@ class LocalPreferenceDataset:
         datasets = []
         cols_to_keep = ["chosen","rejected"]
         for train_path, weight in weighted_dataset_paths:
-            ds = load_dataset("json", data_files=train_path)["train"]
+            print(f"  - loading {train_path} (weight={weight})", flush=True)
+            ds = load_dataset_from_path(train_path, split)
             if weight < 1.0:
                 n = math.floor(len(ds) * weight)
                 ds = ds.shuffle(seed=subsample_seed).select(range(n))
-            print(f"  - {Path(train_path).stem} ({train_path}): {len(ds)} samples (weight={weight})")
+            print(f"    {Path(train_path).stem}: {len(ds)} samples")
             ds = ds.remove_columns([c for c in ds.column_names if c not in cols_to_keep])
             datasets.append(ds)
 
