@@ -2305,7 +2305,6 @@ def _mamba_forward_with_linear_ce_fusion(
     logprobs = from_parallel_hidden_states_to_logprobs(
         hidden_states,
         output_weight_layer,
-        output_weight_layer,
         runtime_gather_output,
         labels,
         vocab_start_index=vocab_start_index,
