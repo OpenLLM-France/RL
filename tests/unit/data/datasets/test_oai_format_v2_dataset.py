@@ -70,9 +70,14 @@ class TestDatasetSpec:
 
     def test_full_dict(self):
         spec = DatasetSpec.parse(
-            {"path": "a", "weight": 0.5, "chat_template_kwargs": {"enable_thinking": 0}}
+            {
+                "path": "a",
+                "weight": 0.5,
+                "chat_template_kwargs": {"enable_thinking": 0},
+                "use_tools": True,
+            }
         )
-        assert spec == DatasetSpec("a", 0.5, {"enable_thinking": 0})
+        assert spec == DatasetSpec("a", 0.5, {"enable_thinking": 0}, True)
 
     def test_dict_defaults(self):
         assert DatasetSpec.parse({"path": "a"}) == DatasetSpec("a")
@@ -412,7 +417,7 @@ class TestChatTemplateKwargs:
 class TestTools:
     TOOL = {"type": "function", "function": {"name": "f", "parameters": {"x": 1}}}
     TOOL2 = {"type": "function", "function": {"name": "g", "parameters": {"y": 2}}}
-    ON = {"chat_template_kwargs": {"tools": True}}
+    ON = {"use_tools": True}
 
     @pytest.mark.parametrize("as_str", [False, True])
     def test_tools_true_uses_column(self, tmp_path, as_str):
@@ -422,10 +427,10 @@ class TestTools:
         assert "tools" not in ds.column_names
         assert _kwargs(ds) == [{"tools": [self.TOOL]}]
 
-    @pytest.mark.parametrize("file_kwargs", [{}, {"tools": False}, {"tools": None}])
-    def test_tools_not_defined_drops_column(self, tmp_path, file_kwargs):
+    @pytest.mark.parametrize("extra", [{}, {"use_tools": False}])
+    def test_use_tools_off_drops_column(self, tmp_path, extra):
         p = _write_jsonl(tmp_path / "a.jsonl", [_sample(0, tools=[self.TOOL])])
-        ds = OpenAIFormatDatasetV2({"path": p, "chat_template_kwargs": file_kwargs}).dataset
+        ds = OpenAIFormatDatasetV2({"path": p, **extra}).dataset
         assert _kwargs(ds) == [{}]
 
     @pytest.mark.parametrize("empty", [None, [], ""])
