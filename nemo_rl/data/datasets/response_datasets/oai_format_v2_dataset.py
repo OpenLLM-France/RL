@@ -39,15 +39,15 @@ class DatasetSpec:
         weight: ``0 < weight <= 1.0``; randomly subsamples the file to
             ``floor(len * weight)`` records.
         chat_template_kwargs: passed to ``apply_chat_template`` for every sample
-            of the file, e.g. ``{"enable_thinking": False}``. Tools are given to
-            the template only if it defines ``tools``: ``tools: true`` passes
-            the ``tool_key`` column of each sample, a list is the tool set of
-            every sample of the file.
+            of the file, e.g. ``{"enable_thinking": False}``.
+        use_tools: pass the ``tool_key`` column of each sample as the ``tools``
+            of ``apply_chat_template``; otherwise the column is ignored.
     """
 
     path: str
     weight: float = 1.0
     chat_template_kwargs: dict[str, Any] = field(default_factory=dict)
+    use_tools: bool = False
 
     def __post_init__(self):
         if not 0 < self.weight <= 1.0:
@@ -67,7 +67,7 @@ class DatasetSpec:
             return cls(**entry)
         raise ValueError(
             f"A dataset entry must be a path or a dict with 'path' and optional "
-            f"'weight' / 'chat_template_kwargs'; got {entry!r}."
+            f"'weight' / 'chat_template_kwargs' / 'use_tools'; got {entry!r}."
         )
 
 
@@ -148,15 +148,15 @@ class OpenAIFormatDatasetV2:
     }
 
     Tools are passed to ``apply_chat_template`` as the ``tools`` key of
-    ``chat_template_kwargs``, only for the files whose ``chat_template_kwargs``
-    define ``tools`` (see `DatasetSpec`).
+    ``chat_template_kwargs``, only for the files with ``use_tools: true``
+    (see `DatasetSpec`).
 
     Args:
         train_ds_path: a path, a dict, or a list of paths / dicts. A dict has the
-            keys of `DatasetSpec`: ``path``, ``weight`` (default 1.0) and
-            ``chat_template_kwargs`` (default {}), e.g.
-            ``{path: data/*.parquet, weight: 0.5,
-            chat_template_kwargs: {enable_thinking: false}}``.
+            keys of `DatasetSpec`: ``path``, ``weight`` (default 1.0),
+            ``chat_template_kwargs`` (default {}) and ``use_tools`` (default
+            false), e.g. ``{path: data/*.parquet, weight: 0.5,
+            chat_template_kwargs: {enable_thinking: false}, use_tools: true}``.
         val_ds_path: same forms as ``train_ds_path`` (weights apply too), or
             None to skip validation.
         chat_key / tool_key: as in `OpenAIFormatDataset`.
@@ -164,7 +164,7 @@ class OpenAIFormatDatasetV2:
 
     The kwargs given to ``apply_chat_template`` are, by increasing priority:
     the global ``tokenizer.chat_template_kwargs``, the ``chat_template_kwargs``
-    of the file (its ``tools`` resolved as above), then the per-sample
+    of the file, the sample's tools (with ``use_tools``), then the per-sample
     ``chat_template_kwargs`` column (as in smoltalk2), merged key by key.
     """
 
@@ -199,9 +199,9 @@ class OpenAIFormatDatasetV2:
         datasets = []
         for spec in specs:
             print(f"  - loading {spec.path} ({name}, weight={spec.weight})", flush=True)
-            if spec.chat_template_kwargs.get("tools") is True and self.tool_key is None:
+            if spec.use_tools and self.tool_key is None:
                 raise ValueError(
-                    f"{spec.path!r} sets tools: true but tool_key is None."
+                    f"{spec.path!r} sets use_tools: true but tool_key is None."
                 )
             ds = _load_columns(spec.path, self.cols_to_keep, self.tool_key)
             if len(ds) == 0:
@@ -218,7 +218,10 @@ class OpenAIFormatDatasetV2:
             datasets.append(
                 ds.map(
                     self.add_messages_key,
-                    fn_kwargs={"file_kwargs": spec.chat_template_kwargs},
+                    fn_kwargs={
+                        "file_kwargs": spec.chat_template_kwargs,
+                        "use_tools": spec.use_tools,
+                    },
                     remove_columns=ds.column_names,
                 )
             )
@@ -232,22 +235,24 @@ class OpenAIFormatDatasetV2:
             raise
 
     def add_messages_key(
-        self, example: dict[str, Any], file_kwargs: dict[str, Any]
+        self,
+        example: dict[str, Any],
+        file_kwargs: dict[str, Any],
+        use_tools: bool = False,
     ) -> dict[str, Any]:
         """Map one raw sample to ``{messages, chat_template_kwargs}``.
 
         ``chat_template_kwargs`` is the file-level ``file_kwargs`` updated by the
         sample's own ``chat_template_kwargs`` column, serialized as a json string.
-        A file-level ``tools: true`` is replaced by the sample's ``tool_key``
-        column; without ``tools`` in ``file_kwargs``, no tools are passed.
+        With ``use_tools``, the sample's ``tool_key`` column, when not empty,
+        is set as ``tools`` in between.
         """
         messages = list(example[self.chat_key])
         kwargs = dict(file_kwargs)
-        tools = kwargs.pop("tools", None)
-        if tools is True:
+        if use_tools:
             tools = _sample_tools(example.get(self.tool_key))
-        if tools:
-            kwargs["tools"] = tools
+            if tools:
+                kwargs["tools"] = tools
         kwargs.update(_sample_template_kwargs(example.get("chat_template_kwargs")))
         # Stored as a json string: samples with different keys would otherwise
         # be None-filled by the arrow schema.
