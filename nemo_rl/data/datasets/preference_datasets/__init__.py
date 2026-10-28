@@ -20,6 +20,7 @@ from nemo_rl.data.datasets.preference_datasets.preference_dataset import (
     PreferenceDataset,
 )
 from nemo_rl.data.datasets.preference_datasets.tulu3 import Tulu3PreferenceDataset
+from nemo_rl.data.datasets.preference_datasets.local_preference_data import LocalPreferenceDataset
 
 DATASET_REGISTRY = {
     # built-in datasets
@@ -28,8 +29,8 @@ DATASET_REGISTRY = {
     # load from local JSONL file or HuggingFace
     "BinaryPreferenceDataset": BinaryPreferenceDataset,
     "PreferenceDataset": PreferenceDataset,
+    "LocalPreferenceDataset": LocalPreferenceDataset
 }
-
 
 def load_preference_dataset(data_config: PreferenceDatasetConfig):
     """Loads preference dataset."""
@@ -60,4 +61,5 @@ __all__ = [
     "PreferenceDataset",
     "Tulu3PreferenceDataset",
     "load_preference_dataset",
+    "LocalPreferenceDataset"
 ]
