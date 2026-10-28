@@ -16,6 +16,9 @@ from nemo_rl.data.datasets.preference_datasets.binary_preference_dataset import 
     BinaryPreferenceDataset,
 )
 from nemo_rl.data.datasets.preference_datasets.helpsteer3 import HelpSteer3Dataset
+from nemo_rl.data.datasets.preference_datasets.oai_preference_v2_dataset import (
+    OpenAIPreferenceDatasetV2,
+)
 from nemo_rl.data.datasets.preference_datasets.preference_dataset import (
     PreferenceDataset,
 )
@@ -29,7 +32,8 @@ DATASET_REGISTRY = {
     # load from local JSONL file or HuggingFace
     "BinaryPreferenceDataset": BinaryPreferenceDataset,
     "PreferenceDataset": PreferenceDataset,
-    "LocalPreferenceDataset": LocalPreferenceDataset
+    "LocalPreferenceDataset": LocalPreferenceDataset,
+    "openai_preference_v2": OpenAIPreferenceDatasetV2,
 }
 
 def load_preference_dataset(data_config: PreferenceDatasetConfig):
@@ -58,6 +62,7 @@ def load_preference_dataset(data_config: PreferenceDatasetConfig):
 __all__ = [
     "BinaryPreferenceDataset",
     "HelpSteer3Dataset",
+    "OpenAIPreferenceDatasetV2",
     "PreferenceDataset",
     "Tulu3PreferenceDataset",
     "load_preference_dataset",

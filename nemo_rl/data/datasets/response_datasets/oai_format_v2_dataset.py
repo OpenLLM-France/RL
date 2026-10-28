@@ -19,7 +19,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import orjson
 from datasets import Dataset, concatenate_datasets
@@ -165,6 +165,83 @@ def _sample_template_kwargs(value: Any) -> dict[str, Any]:
     return {k: v for k, v in value.items() if v is not None}
 
 
+def merge_template_kwargs(
+    data: dict[str, Any],
+    file_kwargs: dict[str, Any],
+    use_tools: bool,
+    tool_key: str | None,
+) -> str:
+    """Merge ``file_kwargs``, the sample's tools and its own kwargs.
+
+    ``file_kwargs`` is updated by the sample's ``tool_key`` column (as
+    ``tools``, with ``use_tools``, when not empty), then by its own
+    ``chat_template_kwargs`` column, and serialized as a json string.
+    """
+    kwargs = dict(file_kwargs)
+    if use_tools:
+        tools = _sample_tools(data.get(tool_key))
+        if tools:
+            kwargs["tools"] = tools
+    kwargs.update(_sample_template_kwargs(data.get("chat_template_kwargs")))
+    # Stored as a json string: samples with different keys would otherwise
+    # be None-filled by the arrow schema.
+    return json.dumps(kwargs)
+
+
+def load_data_paths(
+    data_path: "str | dict | list",
+    columns: list[str],
+    format_fn: Callable[..., dict[str, Any]],
+    tool_key: str | None,
+    subsample_seed: int,
+) -> Dataset:
+    """Load every entry of ``data_path`` (see `DatasetSpec`) as one Dataset.
+
+    Each file is pruned to ``columns``, subsampled to its ``weight``, and mapped
+    with ``format_fn(data, file_kwargs=..., use_tools=...)``.
+    """
+    specs = parse_specs(data_path)
+    if not specs:
+        raise ValueError("At least one `data_path` is needed.")
+    datasets = []
+    for spec in specs:
+        print(f"  - loading {spec.path} (weight={spec.weight})", flush=True)
+        if spec.use_tools and tool_key is None:
+            raise ValueError(
+                f"{spec.path!r} sets use_tools: true but tool_key is None."
+            )
+        ds = _load_columns(spec.path, columns)
+        if len(ds) == 0:
+            # e.g. a glob that matches no file only warns in the loader
+            raise ValueError(f"No sample found for {spec.path!r}.")
+        if spec.weight < 1.0:
+            n = math.floor(len(ds) * spec.weight)
+            ds = ds.shuffle(seed=subsample_seed).select(range(n))
+        if len(ds) == 0:
+            raise ValueError(
+                f"weight={spec.weight} leaves no sample of {spec.path!r}."
+            )
+        print(f"    {Path(spec.path).stem}: {len(ds)} samples")
+        datasets.append(
+            ds.map(
+                format_fn,
+                fn_kwargs={
+                    "file_kwargs": spec.chat_template_kwargs,
+                    "use_tools": spec.use_tools,
+                },
+                remove_columns=ds.column_names,
+            )
+        )
+    try:
+        return concatenate_datasets(datasets)
+    except Exception:
+        # the datasets loaded fine on their own but disagree on the schema
+        print("Cannot concatenate the datasets, schemas are:")
+        for spec, ds in zip(specs, datasets):
+            print(f"  - {spec.path}\n      {ds.features}")
+        raise
+
+
 class OpenAIFormatDatasetV2(RawDataset):
     """SFT dataset in the OpenAI format, with per-file options.
 
@@ -227,60 +304,22 @@ class OpenAIFormatDatasetV2(RawDataset):
         self.chat_key = chat_key
         self.tool_key = tool_key
         self.task_name = task_name
-        self.subsample_seed = seed if subsample_seed is None else subsample_seed
 
-        self.cols_to_keep = [chat_key, "chat_template_kwargs"]
+        columns = [chat_key, "chat_template_kwargs"]
         if tool_key is not None:
-            self.cols_to_keep.append(tool_key)
-
-        specs = parse_specs(data_path)
-        if not specs:
-            raise ValueError("openai_format_v2 needs at least one `data_path`.")
-        self.dataset = self._load(specs)
+            columns.append(tool_key)
+        self.dataset = load_data_paths(
+            data_path,
+            columns,
+            self.format_data,
+            tool_key,
+            subsample_seed=seed if subsample_seed is None else subsample_seed,
+        )
         print(f"Loaded {self.task_name}: {len(self.dataset)} samples.")
 
         # `self.val_dataset` is used (not None) only when current dataset is used for both training and validation
         self.val_dataset = None
         self.split_train_validation(split_validation_size, seed)
-
-    def _load(self, specs: list[DatasetSpec]) -> Dataset:
-        datasets = []
-        for spec in specs:
-            print(f"  - loading {spec.path} (weight={spec.weight})", flush=True)
-            if spec.use_tools and self.tool_key is None:
-                raise ValueError(
-                    f"{spec.path!r} sets use_tools: true but tool_key is None."
-                )
-            ds = _load_columns(spec.path, self.cols_to_keep)
-            if len(ds) == 0:
-                # e.g. a glob that matches no file only warns in the loader
-                raise ValueError(f"No sample found for {spec.path!r}.")
-            if spec.weight < 1.0:
-                n = math.floor(len(ds) * spec.weight)
-                ds = ds.shuffle(seed=self.subsample_seed).select(range(n))
-            if len(ds) == 0:
-                raise ValueError(
-                    f"weight={spec.weight} leaves no sample of {spec.path!r}."
-                )
-            print(f"    {Path(spec.path).stem}: {len(ds)} samples")
-            datasets.append(
-                ds.map(
-                    self.format_data,
-                    fn_kwargs={
-                        "file_kwargs": spec.chat_template_kwargs,
-                        "use_tools": spec.use_tools,
-                    },
-                    remove_columns=ds.column_names,
-                )
-            )
-        try:
-            return concatenate_datasets(datasets)
-        except Exception:
-            # the datasets loaded fine on their own but disagree on the schema
-            print("Cannot concatenate the datasets, schemas are:")
-            for spec, ds in zip(specs, datasets):
-                print(f"  - {spec.path}\n      {ds.features}")
-            raise
 
     def format_data(
         self,
@@ -295,17 +334,10 @@ class OpenAIFormatDatasetV2(RawDataset):
         With ``use_tools``, the sample's ``tool_key`` column, when not empty,
         is set as ``tools`` in between.
         """
-        messages = list(data[self.chat_key])
-        kwargs = dict(file_kwargs)
-        if use_tools:
-            tools = _sample_tools(data.get(self.tool_key))
-            if tools:
-                kwargs["tools"] = tools
-        kwargs.update(_sample_template_kwargs(data.get("chat_template_kwargs")))
-        # Stored as a json string: samples with different keys would otherwise
-        # be None-filled by the arrow schema.
         return {
-            "messages": messages,
-            "chat_template_kwargs": json.dumps(kwargs),
+            "messages": list(data[self.chat_key]),
+            "chat_template_kwargs": merge_template_kwargs(
+                data, file_kwargs, use_tools, self.tool_key
+            ),
             "task_name": self.task_name,
         }

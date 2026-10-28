@@ -265,11 +265,18 @@ def preference_preprocessor(
     messages_chosen = datum_dict["context"] + chosen_completion["completion"]
     messages_rejected = datum_dict["context"] + rejected_completion["completion"]
 
+    chat_template_kwargs = datum_dict.get("chat_template_kwargs", None)
     message_log_chosen = get_formatted_message_log(
-        messages_chosen, tokenizer, task_data_spec
+        messages_chosen,
+        tokenizer,
+        task_data_spec,
+        chat_template_kwargs=chat_template_kwargs,
     )
     message_log_rejected = get_formatted_message_log(
-        messages_rejected, tokenizer, task_data_spec
+        messages_rejected,
+        tokenizer,
+        task_data_spec,
+        chat_template_kwargs=chat_template_kwargs,
     )
 
     length_chosen = sum(len(m["token_ids"]) for m in message_log_chosen)

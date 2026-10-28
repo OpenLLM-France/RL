@@ -179,6 +179,37 @@ Your JSONL files should contain one JSON object per line with the following stru
 }
 ```
 
+#### Several Files, Weights, Tools and Per-File Chat Template Options (`openai_preference_v2`)
+
+`openai_preference_v2` is the preference counterpart of the SFT [`openai_format_v2`](sft.md) dataset: it loads several files or glob patterns (`.json` / `.jsonl`, optionally gzip-compressed, `.parquet`, local or `hf://`) as one dataset, and each entry of `data_path` is a path or a dict with `weight`, `chat_template_kwargs` and `use_tools`. With `use_tools: true`, the `tool_key` column (default `tools`, a list or a JSON string) of each sample is passed as `tools` to `apply_chat_template()`; otherwise the column is ignored.
+
+```yaml
+data:
+  train:
+    dataset_name: openai_preference_v2
+    data_path:
+      - /data/dpo_instruct/smolrewrite/*.jsonl
+      - path: /data/dpo_instruct/xlam-*/*.jsonl
+        weight: 0.5
+        use_tools: true
+      - path: /data/dpo_thinking/**/*.jsonl
+        chat_template_kwargs: {enable_thinking: true}
+    seed: ${dpo.seed}
+  validation:
+    dataset_name: openai_preference_v2
+    data_path: /data/dpo_val/*.jsonl
+```
+
+Each sample has `chosen` and `rejected` message lists (keys set by `chosen_key` / `rejected_key`), and optionally `tools` and `chat_template_kwargs`. If a sample has no `prompt` (`prompt_key`), `chosen` and `rejected` are full conversations, as in [Luciole-PostTraining-Dataset-1.1](https://huggingface.co/datasets/OpenLLM-France/Luciole-PostTraining-Dataset-1.1): their common prefix becomes the context and the remaining turns the completions. Otherwise `prompt` is the context and `chosen` / `rejected` hold only the completions. A string is accepted for any of the three.
+
+```json
+{"chosen": [{"role": "user", "content": "2+2?"}, {"role": "assistant", "content": "4"}],
+ "rejected": [{"role": "user", "content": "2+2?"}, {"role": "assistant", "content": "5"}],
+ "tools": "[{\"type\": \"function\", \"function\": {...}}]"}
+```
+
+The `chat_template_kwargs` priorities are the same as for SFT. `split_validation_size`, `system_key`, `system_prompt` and `use_preserving_dataset` are not supported.
+
 Please note:
 - If you are using a logger, the prefix used for each validation set will be `validation-<NameOfValidationDataset>`. The total validation time, summed across all validation sets, is reported under `timing/validation/total_validation_time`.
 - If you are doing checkpointing, the `metric_name` value in your `checkpointing` config should reflect the metric and validation set to be tracked. For example, `validation-<NameOfValidationDataset1>_loss`.
