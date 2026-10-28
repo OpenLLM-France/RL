@@ -54,8 +54,8 @@ class OpenAIPreferenceDatasetV2(RawDataset):
     ``completions``). The prompt can hold several turns, and the system prompt
     goes in the data.
 
-    Without a ``prompt_key`` column (or when it is null), ``chosen`` and
-    ``rejected`` are full conversations, as in
+    With ``prompt_key: null``, without a ``prompt_key`` column, or when it is
+    null in a sample, ``chosen`` and ``rejected`` are full conversations, as in
     OpenLLM-France/Luciole-PostTraining-Dataset-1.1, that differ only in their
     last message: the other messages are the context.
 
@@ -70,7 +70,8 @@ class OpenAIPreferenceDatasetV2(RawDataset):
     validation data is given in ``data.validation``.
 
     Args:
-        prompt_key: Key for the prompt messages (default: "prompt")
+        prompt_key: Key for the prompt messages, or None when chosen and
+            rejected are full conversations (default: "prompt")
         chosen_key: Key for the preferred completion (default: "chosen")
         rejected_key: Key for the rejected completion (default: "rejected")
     """
@@ -78,7 +79,7 @@ class OpenAIPreferenceDatasetV2(RawDataset):
     def __init__(
         self,
         data_path: "str | dict | list",
-        prompt_key: str = "prompt",
+        prompt_key: str | None = "prompt",
         chosen_key: str = "chosen",
         rejected_key: str = "rejected",
         tool_key: str | None = "tools",
@@ -101,7 +102,9 @@ class OpenAIPreferenceDatasetV2(RawDataset):
         self.tool_key = tool_key
         self.task_name = task_name
 
-        columns = [prompt_key, chosen_key, rejected_key, "chat_template_kwargs"]
+        columns = [chosen_key, rejected_key, "chat_template_kwargs"]
+        if prompt_key is not None:
+            columns.append(prompt_key)
         if tool_key is not None:
             columns.append(tool_key)
         self.dataset = load_data_paths(
@@ -124,7 +127,7 @@ class OpenAIPreferenceDatasetV2(RawDataset):
         """Map one raw sample to ``{context, completions, chat_template_kwargs, task_name}``."""
         chosen = _as_messages(data[self.chosen_key], "assistant")
         rejected = _as_messages(data[self.rejected_key], "assistant")
-        prompt = data.get(self.prompt_key)
+        prompt = None if self.prompt_key is None else data.get(self.prompt_key)
         if prompt is None:
             context = chosen[:-1]
             assert context == rejected[:-1], (

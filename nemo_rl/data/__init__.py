@@ -36,7 +36,7 @@ class ResponseDatasetConfig(TypedDict):
 class PreferenceDatasetConfig(TypedDict):
     dataset_name: NotRequired[str]
     data_path: NotRequired[str]
-    prompt_key: NotRequired[str]
+    prompt_key: NotRequired[str | None]
     chosen_key: NotRequired[str]
     rejected_key: NotRequired[str]
     subset: NotRequired[str | None]
