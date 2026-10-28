@@ -200,7 +200,7 @@ data:
     data_path: /data/dpo_val/*.jsonl
 ```
 
-Each sample has `chosen` and `rejected` message lists (keys set by `chosen_key` / `rejected_key`), and optionally `tools` and `chat_template_kwargs`. If a sample has no `prompt` (`prompt_key`), `chosen` and `rejected` are full conversations, as in [Luciole-PostTraining-Dataset-1.1](https://huggingface.co/datasets/OpenLLM-France/Luciole-PostTraining-Dataset-1.1): their common prefix becomes the context and the remaining turns the completions. Otherwise `prompt` is the context and `chosen` / `rejected` hold only the completions. A string is accepted for any of the three.
+Each sample has `chosen` and `rejected` message lists (keys set by `chosen_key` / `rejected_key`), and optionally `tools` and `chat_template_kwargs`. If a sample has no `prompt` (`prompt_key`), `chosen` and `rejected` are full conversations, as in [Luciole-PostTraining-Dataset-1.1](https://huggingface.co/datasets/OpenLLM-France/Luciole-PostTraining-Dataset-1.1): they must differ only in their last message, which is the completion, the other messages being the context. Otherwise `prompt` is the context and `chosen` / `rejected` hold only the completions. Each completion must be a single assistant message: DPO only trains the last message of each conversation, so a difference in an earlier turn would be ignored. A string is accepted for any of the three.
 
 ```json
 {"chosen": [{"role": "user", "content": "2+2?"}, {"role": "assistant", "content": "4"}],
@@ -213,6 +213,10 @@ The `chat_template_kwargs` priorities are the same as for SFT. `split_validation
 Please note:
 - If you are using a logger, the prefix used for each validation set will be `validation-<NameOfValidationDataset>`. The total validation time, summed across all validation sets, is reported under `timing/validation/total_validation_time`.
 - If you are doing checkpointing, the `metric_name` value in your `checkpointing` config should reflect the metric and validation set to be tracked. For example, `validation-<NameOfValidationDataset1>_loss`.
+
+### Generation Prompt
+
+The loss is computed on the final message of the chosen and rejected conversations only. With `data.add_generation_prompt: true`, the assistant generation prompt of the chat template (e.g. `<|im_start|>assistant\n`, plus an empty think block with `enable_thinking: false`) is put at the end of the context instead of at the start of the completions, so it is not trained. It defaults to `false`.
 
 ## DPO-Specific Parameters
 

@@ -25,6 +25,7 @@ from nemo_rl.data.datasets.preference_datasets import (
 )
 from nemo_rl.data.interfaces import TaskDataSpec
 from nemo_rl.data.processors import preference_preprocessor
+from nemo_rl.data.utils import setup_preference_data
 
 SYSTEM = {"role": "system", "content": "sys"}
 TOOLS = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
@@ -59,7 +60,7 @@ def _kwargs(ds):
 
 
 class TestFormat:
-    def test_full_conversations_split_on_shared_prefix(self, tmp_path):
+    def test_full_conversations_split_on_last_message(self, tmp_path):
         p = _write_jsonl(tmp_path / "a.jsonl", [_full_sample(0)])
         row = OpenAIPreferenceDatasetV2(p).dataset[0]
         assert row["context"] == [SYSTEM, _user(0)]
@@ -69,26 +70,47 @@ class TestFormat:
         ]
         assert row["task_name"] == "openai_preference_v2"
 
-    def test_multi_turn_completions_kept(self, tmp_path):
+    def test_multi_turn_context(self, tmp_path):
         rec = {
             "chosen": [_user(0), _assistant("x"), _user(1), _assistant("good")],
-            "rejected": [_user(0), _assistant("y"), _user(1), _assistant("bad")],
+            "rejected": [_user(0), _assistant("x"), _user(1), _assistant("bad")],
         }
         p = _write_jsonl(tmp_path / "a.jsonl", [rec])
         row = OpenAIPreferenceDatasetV2(p).dataset[0]
-        assert row["context"] == [_user(0)]
-        assert len(row["completions"][0]["completion"]) == 3
+        assert row["context"] == [_user(0), _assistant("x"), _user(1)]
+        assert row["completions"][0]["completion"] == [_assistant("good")]
 
-    def test_completion_never_empty(self, tmp_path):
-        # rejected is a prefix of chosen: the last rejected message stays a completion
+    @pytest.mark.parametrize(
+        "chosen,rejected",
+        [
+            # an earlier assistant turn differs: it would not be trained
+            (
+                [_user(0), _assistant("x"), _user(1), _assistant("good")],
+                [_user(0), _assistant("y"), _user(1), _assistant("bad")],
+            ),
+            # different lengths
+            (
+                [_user(0), _assistant("a"), _assistant("b")],
+                [_user(0), _assistant("a")],
+            ),
+        ],
+    )
+    def test_earlier_turns_must_match(self, tmp_path, chosen, rejected):
+        p = _write_jsonl(
+            tmp_path / "a.jsonl", [{"chosen": chosen, "rejected": rejected}]
+        )
+        with pytest.raises(AssertionError, match="differ only in their last message"):
+            OpenAIPreferenceDatasetV2(p)
+
+    def test_multi_message_completion_with_prompt(self, tmp_path):
         rec = {
-            "chosen": [_user(0), _assistant("a"), _assistant("b")],
-            "rejected": [_user(0), _assistant("a")],
+            "prompt": "q",
+            "chosen": [_assistant("a"), _user(1), _assistant("b")],
+            "rejected": "c",
         }
         p = _write_jsonl(tmp_path / "a.jsonl", [rec])
-        row = OpenAIPreferenceDatasetV2(p).dataset[0]
-        assert row["context"] == [_user(0)]
-        assert row["completions"][1]["completion"] == [_assistant("a")]
+        with pytest.raises(AssertionError, match="chosen completion must be a single"):
+            OpenAIPreferenceDatasetV2(p)
 
     def test_identical_rejected(self, tmp_path):
         rec = {"chosen": [_user(0), _assistant("a")], "rejected": [_user(0), _assistant("a")]}
@@ -99,7 +121,7 @@ class TestFormat:
     @pytest.mark.parametrize("side", ["chosen", "rejected"])
     def test_last_message_not_assistant(self, tmp_path, side):
         rec = _full_sample(0)
-        rec[side] = rec[side] + [_user(1)]
+        rec[side][-1] = _user(1)
         p = _write_jsonl(tmp_path / "a.jsonl", [rec])
         with pytest.raises(AssertionError, match=f"last {side} message"):
             OpenAIPreferenceDatasetV2(p)
@@ -243,3 +265,76 @@ class TestEndToEnd:
         assert chosen.startswith("[tools=1]<|system|>sys")
         assert "good0" in chosen and "bad0" in rejected
         assert "[think=False]" in chosen and "[think=False]" in rejected
+
+
+# Luciole-like: the generation prompt is the assistant header, plus an empty
+# think block when thinking is disabled.
+GEN_TEMPLATE = (
+    "{% for m in messages %}"
+    "{% if m.role == 'assistant' %}<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    "{{ m.content }}<|im_end|>\n"
+    "{% else %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n"
+    "{% if enable_thinking is defined and enable_thinking is false %}"
+    "<think>\n\n</think>\n\n{% endif %}{% endif %}"
+)
+
+
+@pytest.fixture(scope="module")
+def gen_tokenizer(tokenizer):
+    t = tokenizer.__class__(tokenizer_object=tokenizer.backend_tokenizer)
+    t.eos_token, t.pad_token, t.unk_token = "<eos>", "<eos>", "<unk>"
+    t.chat_template = GEN_TEMPLATE
+    return t
+
+
+class TestAddGenerationPrompt:
+    @pytest.fixture
+    def datum(self, tmp_path):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_full_sample(0)])
+        return OpenAIPreferenceDatasetV2(
+            {"path": p, "chat_template_kwargs": {"enable_thinking": False}}
+        ).dataset[0]
+
+    def _process(self, datum, tok, **kwargs):
+        return preference_preprocessor(
+            datum, TaskDataSpec("t"), tok, max_seq_length=10_000, idx=0, **kwargs
+        )
+
+    def test_default_header_in_completions(self, datum, gen_tokenizer):
+        out = self._process(datum, gen_tokenizer)
+        for side in ("chosen", "rejected"):
+            final = out[f"message_log_{side}"][-1]["content"]
+            assert final.startswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+    def test_header_moved_to_context(self, datum, gen_tokenizer):
+        out = self._process(datum, gen_tokenizer, add_generation_prompt=True)
+        assert out["message_log_chosen"][-1]["content"].startswith("good0<|im_end|>")
+        assert out["message_log_rejected"][-1]["content"].startswith("bad0<|im_end|>")
+        for side in ("chosen", "rejected"):
+            context = out[f"message_log_{side}"][-2]
+            assert context["role"] == "user"
+            assert context["content"].endswith(
+                "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            )
+        # the full sequence is unchanged
+        default = self._process(datum, gen_tokenizer)
+        for side in ("chosen", "rejected"):
+            key = f"message_log_{side}"
+            assert "".join(m["content"] for m in out[key]) == "".join(
+                m["content"] for m in default[key]
+            )
+
+    def test_setup_preference_data_reads_config(self, tmp_path, gen_tokenizer):
+        p = _write_jsonl(tmp_path / "a.jsonl", [_full_sample(0)])
+        dataset, _ = setup_preference_data(
+            gen_tokenizer,
+            {
+                "max_input_seq_length": 10_000,
+                "add_generation_prompt": True,
+                "train": {"dataset_name": "openai_preference_v2", "data_path": p},
+            },
+        )
+        final = dataset[0]["message_log_chosen"][-1]["content"]
+        assert final.startswith("<think>\n\n</think>\n\ngood0")

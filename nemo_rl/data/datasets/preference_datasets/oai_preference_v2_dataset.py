@@ -38,22 +38,6 @@ def _as_messages(value: Any, role: str) -> list[dict[str, Any]]:
     return list(value)
 
 
-def _split_shared_prefix(
-    chosen: list[dict[str, Any]], rejected: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split two full conversations into (context, chosen, rejected).
-
-    The context is their longest common prefix, keeping at least one message
-    in each completion.
-    """
-    n = 0
-    while n < min(len(chosen), len(rejected)) - 1 and chosen[n] == rejected[n]:
-        n += 1
-    if chosen == rejected:
-        raise ValueError(f"chosen and rejected are identical: {chosen!r}")
-    return chosen[:n], chosen[n:], rejected[n:]
-
-
 class OpenAIPreferenceDatasetV2(RawDataset):
     """DPO / RM dataset in the OpenAI format, with per-file options.
 
@@ -72,8 +56,12 @@ class OpenAIPreferenceDatasetV2(RawDataset):
 
     Without a ``prompt_key`` column (or when it is null), ``chosen`` and
     ``rejected`` are full conversations, as in
-    OpenLLM-France/Luciole-PostTraining-Dataset-1.1: their common prefix is the
-    context and the remaining turns the completions.
+    OpenLLM-France/Luciole-PostTraining-Dataset-1.1, that differ only in their
+    last message: the other messages are the context.
+
+    Each completion is a single assistant message: DPO only trains the last
+    message of each conversation, so a difference in an earlier turn would be
+    ignored.
 
     ``data_path``, ``tool_key``, ``task_name``, ``seed`` and ``subsample_seed``
     work as in the SFT `OpenAIFormatDatasetV2`: per-file ``weight``,
@@ -138,13 +126,25 @@ class OpenAIPreferenceDatasetV2(RawDataset):
         rejected = _as_messages(data[self.rejected_key], "assistant")
         prompt = data.get(self.prompt_key)
         if prompt is None:
-            context, chosen, rejected = _split_shared_prefix(chosen, rejected)
+            context = chosen[:-1]
+            assert context == rejected[:-1], (
+                "chosen and rejected must differ only in their last message, "
+                "the only one DPO trains on.\n\n"
+                f"chosen: {chosen}\n\nrejected: {rejected}"
+            )
+            chosen, rejected = chosen[-1:], rejected[-1:]
         else:
             context = _as_messages(prompt, "user")
         for name, completion in (("chosen", chosen), ("rejected", rejected)):
-            assert completion[-1]["role"] == "assistant", (
-                f"The last {name} message ({completion[-1]}) is not from assistant!"
+            assert len(completion) == 1, (
+                f"The {name} completion must be a single message, the only one "
+                f"DPO trains on; got {completion}"
             )
+            assert completion[0]["role"] == "assistant", (
+                f"The last {name} message ({completion[0]}) is not from assistant!"
+            )
+        if chosen == rejected:
+            raise ValueError(f"chosen and rejected are identical: {chosen!r}")
         return {
             "context": context,
             "completions": [

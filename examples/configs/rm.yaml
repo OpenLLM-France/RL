@@ -141,6 +141,9 @@ data:
   max_input_seq_length: ${policy.max_total_sequence_length}
   shuffle: true
   num_workers: 1
+  # put the assistant generation prompt of the chat template in the context
+  # (not trained) instead of at the start of the chosen / rejected completions
+  add_generation_prompt: false
 
   # dataset
   train:

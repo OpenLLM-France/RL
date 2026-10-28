@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import partial
 from typing import Any, Optional, Union
 
 from transformers import AutoProcessor, AutoTokenizer
@@ -237,11 +238,15 @@ def setup_preference_data(
     )
 
     print("\n▶ Setting up data...")
+    data_processor = partial(
+        preference_preprocessor,
+        add_generation_prompt=data_config["add_generation_prompt"],
+    )
     # setup train dataset
     if "default" in data_config:
         update_single_dataset_config(data_config["train"], data_config["default"])
     data = load_preference_dataset(data_config["train"])
-    task_data_processors = {data.task_name: (data.task_spec, preference_preprocessor)}
+    task_data_processors = {data.task_name: (data.task_spec, data_processor)}
     task_data_preprocessors = {}
     if hasattr(data, "preprocessor") and data.preprocessor is not None:
         task_data_preprocessors[data.task_name] = data.preprocessor
@@ -273,7 +278,7 @@ def setup_preference_data(
                 {"dataset_name": "PreferenceDataset", "data_path": val_dataset_path}
             )
             val_task_data_processors = {
-                val_data.task_name: (val_data.task_spec, preference_preprocessor)
+                val_data.task_name: (val_data.task_spec, data_processor)
             }
             if hasattr(val_data, "preprocessor") and val_data.preprocessor is not None:
                 val_task_data_preprocessors = {
@@ -299,7 +304,7 @@ def setup_preference_data(
             )
         val_data = load_preference_dataset(data_config["validation"])
         val_task_data_processors = {
-            val_data.task_name: (val_data.task_spec, preference_preprocessor)
+            val_data.task_name: (val_data.task_spec, data_processor)
         }
         if hasattr(val_data, "preprocessor") and val_data.preprocessor is not None:
             val_task_data_preprocessors = {val_data.task_name: val_data.preprocessor}

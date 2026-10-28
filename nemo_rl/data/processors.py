@@ -194,8 +194,12 @@ def preference_preprocessor(
     tokenizer,
     max_seq_length: int,
     idx: int,
+    add_generation_prompt: bool = False,
 ) -> PreferenceDatumSpec:
     """Process a datum dictionary for RM/DPO training.
+
+    With ``add_generation_prompt``, the assistant generation prompt of the chat
+    template is put at the end of the context, out of the trained completions.
 
     Examples:
         ```{doctest}
@@ -270,12 +274,14 @@ def preference_preprocessor(
         messages_chosen,
         tokenizer,
         task_data_spec,
+        add_generation_prompt=add_generation_prompt,
         chat_template_kwargs=chat_template_kwargs,
     )
     message_log_rejected = get_formatted_message_log(
         messages_rejected,
         tokenizer,
         task_data_spec,
+        add_generation_prompt=add_generation_prompt,
         chat_template_kwargs=chat_template_kwargs,
     )
 
