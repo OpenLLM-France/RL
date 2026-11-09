@@ -268,6 +268,36 @@ class TestWeights:
         ).formatted_ds["train"]
         assert len(ds) == 15
 
+    def test_same_length_files_pick_different_rows(self, tmp_path):
+        # same seed, same length, same row order: each file still gets its own shuffle
+        a = _write_jsonl(tmp_path / "a.jsonl", [_sample(i) for i in range(100)])
+        b = _write_jsonl(tmp_path / "b.jsonl", [_sample(i) for i in range(100)])
+        get = lambda p: [
+            m["messages"][0]["content"]
+            for m in OpenAIFormatDatasetV2({"path": p, "weight": 0.3}).formatted_ds["train"]
+        ]
+        assert get(a) != get(b)
+
+    def test_file_picks_same_rows_whatever_the_mix(self, tmp_path):
+        a = _write_jsonl(tmp_path / "a.jsonl", [_sample(i) for i in range(100)])
+        b = _write_jsonl(tmp_path / "b.jsonl", [_sample(i + 100) for i in range(50)])
+        rows = lambda ds: {m["messages"][0]["content"] for m in ds.formatted_ds["train"]}
+        alone = rows(OpenAIFormatDatasetV2({"path": a, "weight": 0.3}))
+        mixed = rows(
+            OpenAIFormatDatasetV2([{"path": b, "weight": 0.5}, {"path": a, "weight": 0.3}])
+        )
+        assert alone <= mixed and len(alone) == 30
+
+    def test_file_seed_ignores_hf_snapshot(self):
+        from nemo_rl.data.datasets.response_datasets.oai_format_v2_dataset import (
+            _file_seed,
+        )
+
+        snap = "/hub/datasets--org--d/snapshots/{}/data/sft/x/*.parquet"
+        assert _file_seed(42, snap.format("a" * 40)) == _file_seed(42, snap.format("b" * 40))
+        assert _file_seed(42, snap.format("a" * 40)) != _file_seed(43, snap.format("a" * 40))
+        assert _file_seed(42, "data/x/*.parquet") != _file_seed(42, "data/y/*.parquet")
+
 
 # --------------------------------------------------------------------------
 # chat_template_kwargs merging

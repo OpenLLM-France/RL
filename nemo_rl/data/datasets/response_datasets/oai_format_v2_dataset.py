@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,7 +39,8 @@ class DatasetSpec:
             "hf://datasets/OpenLLM-France/ReAct/data/**/*.parquet" -- or the
             name of a dataset on the HuggingFace Hub.
         weight: ``0 < weight <= 1.0``; randomly subsamples the file to
-            ``floor(len * weight)`` records.
+            ``floor(len * weight)`` records, with a seed derived from the
+            subsample seed and the path (see `_file_seed`).
         chat_template_kwargs: passed to ``apply_chat_template`` for every sample
             of the file, e.g. ``{"enable_thinking": False}``.
         use_tools: pass the ``tool_key`` column of each sample as the ``tools``
@@ -134,6 +137,22 @@ def _load_columns(path: str, columns: list[str], tool_key: str | None) -> Datase
     return Dataset.from_list([{c: r[c] for c in present} for r in records])
 
 
+_HF_SNAPSHOT = re.compile(r"^.*/snapshots/[0-9a-f]{40}/")
+
+
+def _file_seed(seed: int, path: str) -> int:
+    """Subsampling seed of one file, derived from the global ``seed`` and the path.
+
+    Every file gets its own shuffle (two files of the same length no longer pick
+    the same row indices), and a file picks the same rows whatever the other
+    entries of the mix are. The HF cache prefix up to ``snapshots/<sha>/`` is
+    dropped, so the seed does not change with the snapshot of a dataset.
+    """
+    key = _HF_SNAPSHOT.sub("", path)
+    digest = hashlib.sha256(f"{seed}:{key}".encode()).digest()
+    return int.from_bytes(digest[:4], "little")
+
+
 class OpenAIFormatDatasetV2:
     """SFT dataset in the OpenAI format, with per-file options.
 
@@ -209,7 +228,9 @@ class OpenAIFormatDatasetV2:
                 raise ValueError(f"No sample found for {spec.path!r}.")
             if spec.weight < 1.0:
                 n = math.floor(len(ds) * spec.weight)
-                ds = ds.shuffle(seed=self.subsample_seed).select(range(n))
+                ds = ds.shuffle(
+                    seed=_file_seed(self.subsample_seed, spec.path)
+                ).select(range(n))
             if len(ds) == 0:
                 raise ValueError(
                     f"weight={spec.weight} leaves no sample of {spec.path!r}."
